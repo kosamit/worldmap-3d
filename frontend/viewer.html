@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WorldMap 3D — Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./viewer.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="layout">
+      <aside id="panel">
+        <h1>WorldMap 3D</h1>
+
+        <label class="field">
+          バックエンドURL
+          <input id="backend-url" type="text" value="http://localhost:8000" />
+        </label>
+
+        <section>
+          <div class="section-head">
+            <h2>蓄積シーン</h2>
+            <button id="refresh-btn" type="button">更新</button>
+          </div>
+          <ul id="scene-list"></ul>
+        </section>
+
+        <section>
+          <h2>画像から3D化</h2>
+          <form id="upload-form">
+            <input id="upload-file" type="file" accept="image/*" />
+            <label class="inline">FOV <input id="upload-fov" type="number" value="75" min="30" max="120" /></label>
+            <button type="submit">アップロードして3D化</button>
+          </form>
+        </section>
+
+        <section>
+          <h2>Street View から360°3D化</h2>
+          <form id="streetview-form">
+            <div class="grid2">
+              <label class="inline">緯度 <input id="sv-lat" type="number" step="any" placeholder="35.6595" /></label>
+              <label class="inline">経度 <input id="sv-lng" type="number" step="any" placeholder="139.7005" /></label>
+              <label class="inline">視点数 <input id="sv-views" type="number" value="8" min="2" max="16" /></label>
+              <label class="inline">pitch <input id="sv-pitch" type="number" value="0" /></label>
+              <label class="inline">fov <input id="sv-fov" type="number" value="90" /></label>
+            </div>
+            <button type="submit">360°取得して3D化</button>
+          </form>
+          <p class="hint">
+            同一地点を視点数ぶん回して撮影し、取り囲む3D空間に合成します。<br />
+            API キーはバックエンドの .env (GOOGLE_MAPS_API_KEY) を使用。
+          </p>
+        </section>
+
+        <p id="status">準備完了</p>
+      </aside>
+
+      <main id="canvas-wrap">
+        <div id="blocker">
+          <div id="instructions">
+            <p class="big">クリックで歩行開始</p>
+            <p>
+              <strong>WASD</strong> 移動 / <strong>マウス</strong> 視点 /
+              <strong>Shift</strong> ダッシュ / <strong>Esc</strong> 解除
+            </p>
+          </div>
+        </div>
+        <div id="hud"><div id="coords">x:0 y:0 z:0</div></div>
+      </main>
+    </div>
+
+    <script type="module" src="./src/viewer.js"></script>
+  </body>
+</html>

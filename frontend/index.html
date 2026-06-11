@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WorldMap 3D — Walk Test</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <!-- Three.js を CDN から ES Modules で読み込む（ビルド不要） -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="blocker">
+      <div id="instructions">
+        <h1>WorldMap 3D</h1>
+        <p class="big">クリックして開始</p>
+        <p>
+          <strong>W A S D</strong> 移動 &nbsp;/&nbsp;
+          <strong>マウス</strong> 視点 &nbsp;/&nbsp;
+          <strong>Space</strong> ジャンプ &nbsp;/&nbsp;
+          <strong>Shift</strong> ダッシュ &nbsp;/&nbsp;
+          <strong>Esc</strong> 解除
+        </p>
+      </div>
+    </div>
+
+    <div id="hud">
+      <div id="coords">x: 0.0  z: 0.0</div>
+      <div id="fps">-- fps</div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

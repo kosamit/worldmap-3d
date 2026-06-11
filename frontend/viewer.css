@@ -1,0 +1,147 @@
+/* viewer.html 専用レイアウト。styles.css を一部上書きする。 */
+
+#layout {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+#panel {
+  width: 320px;
+  flex: 0 0 320px;
+  height: 100%;
+  overflow-y: auto;
+  background: #1a1f26;
+  color: #e6e9ed;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+#panel h1 {
+  font-size: 1.3rem;
+  margin-bottom: 12px;
+}
+
+#panel h2 {
+  font-size: 0.95rem;
+  margin: 0 0 8px;
+  color: #9fb3c8;
+}
+
+#panel section {
+  margin-top: 18px;
+  border-top: 1px solid #2c333d;
+  padding-top: 12px;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#panel input,
+#panel button {
+  font-size: 0.85rem;
+  border-radius: 6px;
+  border: 1px solid #3a434f;
+  background: #11151b;
+  color: #e6e9ed;
+  padding: 6px 8px;
+}
+
+#panel button {
+  background: #2f6fed;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#panel button:hover {
+  background: #4480ff;
+}
+
+.field {
+  display: block;
+  font-size: 0.8rem;
+  color: #9fb3c8;
+}
+
+.field input {
+  width: 100%;
+  margin-top: 4px;
+}
+
+#panel form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #9fb3c8;
+}
+
+.inline input {
+  width: 110px;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+#scene-list {
+  list-style: none;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+#scene-list li {
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+}
+
+#scene-list li:hover {
+  background: #263040;
+}
+
+#scene-list li.empty {
+  color: #66707c;
+  cursor: default;
+}
+
+.hint {
+  font-size: 0.72rem;
+  color: #66707c;
+  margin-top: 6px;
+}
+
+#status {
+  margin-top: 18px;
+  font-size: 0.82rem;
+  color: #9fe6a0;
+  word-break: break-word;
+}
+
+/* canvas 領域 */
+#canvas-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  height: 100%;
+  cursor: pointer;
+}
+
+/* styles.css の #blocker(position:fixed) を canvas 内に限定 */
+#canvas-wrap #blocker {
+  position: absolute;
+}

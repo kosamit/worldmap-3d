@@ -1,0 +1,4 @@
+# Depth Anything 3 (CUDA) 用の追加依存。
+# torch は CUDA ビルドを別途入れること（setup-cuda.sh が --index-url で導入）。
+depth-anything-3
+xformers

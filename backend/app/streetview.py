@@ -134,7 +134,13 @@ def gather_nearby_viewpoints(
     混ざって「壁・天井が消える／ぐちゃぐちゃ」になるのを防ぐ。条件を満たすものが無ければ
     中心1地点だけ（=きれいな単一視点）になる。
     """
-    seeds = [(0.0, 0.0), (radius_m, 0.0), (-radius_m, 0.0), (0.0, radius_m), (0.0, -radius_m)]
+    # 中心＋全周8方向×2リング。柱の裏など遮蔽部を別位置から捉えるため位置を多めに探す
+    # （同一撮影の実在パノラマだけが consistent フィルタで残る）。
+    seeds = [(0.0, 0.0)]
+    for rr in (radius_m, radius_m * 2.0):
+        for deg in range(0, 360, 45):
+            a = math.radians(deg)
+            seeds.append((rr * math.cos(a), rr * math.sin(a)))
     out: list[dict] = []
     seen: set[str] = set()
     ref_copyright: str | None = None

@@ -405,7 +405,7 @@ export default function Home() {
 
   // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
   // method="tsdf" で TSDF 融合（重なり層を1枚の連続面へ＝ソリッド）。
-  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" = "mesh") => {
+  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" = "mesh") => {
     if (!current) {
       say("先に地図で地点を選んでください", true);
       return;
@@ -540,6 +540,15 @@ export default function Home() {
                 title="TSDF融合: 重なった深度を1枚の連続面に統合した、よりソリッドな歩ける空間を作ります（やや重い）"
               >
                 {building3d ? "生成中..." : "▣ TSDF 3D化（ソリッド）"}
+              </button>
+              <button
+                type="button"
+                className="primaryWide poisson"
+                onClick={() => handle3DMulti("poisson")}
+                disabled={!current || building3d}
+                title="Poisson面再構成: 穴を水密面で塞ぎ、柱の裏など見えない部分も補間で埋めます（推測込み）"
+              >
+                {building3d ? "生成中..." : "◐ Poisson 3D化（穴埋め）"}
               </button>
             </>
           )}

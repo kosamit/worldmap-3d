@@ -160,7 +160,7 @@ def build_tsdf_mesh(prediction, view_index, viewpoints, voxel: float = 0.06,
         m = _decimate_mesh(m, max_faces)
     scene = trimesh.Scene(); scene.add_geometry(m)
     info = {"representation": "mesh", "method": "tsdf", "vertex_count": int(len(m.vertices)),
-            "face_count": int(len(m.faces)), "voxel": voxel, "scale": float(scale)}
+            "face_count": int(len(m.faces)), "viewpoints": len(viewpoints), "voxel": voxel, "scale": float(scale)}
     return scene, info
 
 
@@ -206,5 +206,5 @@ def build_poisson_mesh(prediction, view_index, viewpoints, depth_octree: int = 9
         m = _decimate_mesh(m, max_faces)
     scene = trimesh.Scene(); scene.add_geometry(m)
     info = {"representation": "mesh", "method": "poisson", "vertex_count": int(len(m.vertices)),
-            "face_count": int(len(m.faces)), "octree": depth_octree}
+            "face_count": int(len(m.faces)), "viewpoints": len(viewpoints), "octree": depth_octree}
     return scene, info

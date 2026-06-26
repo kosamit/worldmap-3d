@@ -314,6 +314,15 @@ body {
   background: #2f74e0;
 }
 
+.panel button.primaryWide.poisson {
+  background: #8a5cc9;
+  margin-top: 6px;
+}
+
+.panel button.primaryWide.poisson:hover {
+  background: #9d6fe0;
+}
+
 .galleryLink {
   display: block;
   margin-top: 10px;

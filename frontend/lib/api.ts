@@ -279,7 +279,7 @@ export interface MultiviewParams {
   rawMode?: boolean;
   removeObjects?: boolean;
   removeClasses?: string;
-  method?: "mesh" | "tsdf";
+  method?: "mesh" | "tsdf" | "poisson";
   tsdfVoxel?: number;
   depthModel?: string | null;
 }

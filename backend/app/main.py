@@ -583,6 +583,12 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                     pred, view_index, viewpoints,
                     voxel=params["tsdf_voxel"], progress=progress,
                 )
+            elif params["method"] == "poisson":
+                # Poisson 面再構成（open3d）。穴を水密面で塞ぐ＝柱の裏なども補間で埋める。
+                from .reconstruct_experiments import build_poisson_mesh
+                scene, info = build_poisson_mesh(
+                    pred, view_index, viewpoints, progress=progress,
+                )
             else:
                 # GPSアンカー配置で面を張る（既定）。
                 scene, info = build_multiview_pointcloud(
@@ -718,7 +724,7 @@ def reconstruct_multiview(
         "raw": bool(raw),
         "remove_objects": bool(remove_objects),
         "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
-        "method": "tsdf" if method == "tsdf" else "mesh",
+        "method": method if method in ("tsdf", "poisson") else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }

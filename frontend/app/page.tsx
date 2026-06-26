@@ -1,105 +1,164 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_BACKEND,
   fetchConfig,
-  fetchScenes,
-  glbUrl,
-  reconstructRoute,
+  fetchPano,
   type AppConfig,
-  type SceneMeta,
 } from "@/lib/api";
 import type { LatLng } from "@/lib/geo";
-import SceneViewer from "@/components/SceneViewer";
+import TourViewer, { type PanoLink } from "@/components/TourViewer";
 import MapPicker from "@/components/MapPicker";
+
+interface PanoState {
+  panoId: string;
+  lat: number;
+  lng: number;
+  links: PanoLink[];
+}
+
+function headingDiff(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
 
 export default function Home() {
   const [backend, setBackend] = useState(DEFAULT_BACKEND);
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [scenes, setScenes] = useState<SceneMeta[]>([]);
-  const [points, setPoints] = useState<LatLng[]>([]);
-  const [views, setViews] = useState(6);
-  const [step, setStep] = useState(20);
-  const [resetSignal, setResetSignal] = useState(0);
-  const [currentGlb, setCurrentGlb] = useState<string | null>(null);
+  const [current, setCurrent] = useState<PanoState | null>(null);
+  const [equirect, setEquirect] = useState<string | null>(null);
   const [status, setStatus] = useState("準備完了");
   const [statusError, setStatusError] = useState(false);
   const [busy, setBusy] = useState(false);
-  // three / google-maps はブラウザ専用なので、マウント後にだけ描画する。
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  const [history, setHistory] = useState<string[]>([]);
+  const svcRef = useRef<google.maps.StreetViewService | null>(null);
+  const facingRef = useRef(0);
 
   const say = useCallback((message: string, isError = false) => {
     setStatus(message);
     setStatusError(isError);
   }, []);
 
-  const refreshScenes = useCallback(async () => {
-    try {
-      setScenes(await fetchScenes(backend));
-    } catch (err) {
-      say((err as Error).message, true);
-    }
-  }, [backend, say]);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const cfg = await fetchConfig(backend);
-        if (cancelled) return;
-        setConfig(cfg);
-        if (!cfg.has_maps_key) {
+        if (!cancelled) setConfig(cfg);
+        if (!cancelled && !cfg.has_maps_key) {
           say("Maps APIキー未設定（backend/.env の GOOGLE_MAPS_API_KEY）", true);
         }
       } catch (err) {
         if (!cancelled) say((err as Error).message, true);
       }
-      refreshScenes();
     })();
     return () => {
       cancelled = true;
     };
-  }, [backend, refreshScenes, say]);
+  }, [backend, say]);
 
-  const onPointsChange = useCallback((p: LatLng[]) => setPoints(p), []);
+  const onMapsReady = useCallback(() => {
+    if (!svcRef.current && window.google?.maps) {
+      svcRef.current = new window.google.maps.StreetViewService();
+    }
+  }, []);
 
-  const loadScene = useCallback(
-    (meta: SceneMeta) => {
-      setCurrentGlb(glbUrl(backend, meta));
-      const verts = meta.vertex_count ? `, ${meta.vertex_count}頂点` : "";
-      say(`表示中: ${meta.id} (${meta.source}${verts})`);
+  // 指定パノラマ(または座標)を表示する。faces を取得して current を更新。
+  const showPano = useCallback(
+    async (req: google.maps.StreetViewLocationRequest | google.maps.StreetViewPanoRequest) => {
+      const svc = svcRef.current;
+      if (!svc) {
+        say("Street View サービスが未準備です", true);
+        return;
+      }
+      setBusy(true);
+      try {
+        const { data } = await svc.getPanorama(req);
+        const loc = data.location;
+        if (!loc?.latLng || !loc.pano) throw new Error("パノラマ情報が不正です");
+        const links: PanoLink[] = (data.links ?? [])
+          .filter((l): l is google.maps.StreetViewLink & { pano: string } => !!l?.pano)
+          .map((l) => ({ heading: l.heading ?? 0, pano: l.pano }));
+        setCurrent({
+          panoId: loc.pano,
+          lat: loc.latLng.lat(),
+          lng: loc.latLng.lng(),
+          links,
+        });
+        const pano = await fetchPano(backend, { panoId: loc.pano, outWidth: 2560 });
+        setEquirect(pano.equirect);
+        say("移動しました。ドラッグで見回し、W/矢印で隣へ");
+      } catch {
+        say("この付近に Street View が見つかりません", true);
+      } finally {
+        setBusy(false);
+      }
     },
     [backend, say],
   );
 
-  const handleRoute = useCallback(async () => {
-    if (points.length < 2) {
-      say("地図で始点と終点をクリックしてください", true);
+  // 地図クリック：そこに降り立つ（履歴リセット）。
+  const handlePick = useCallback(
+    (point: LatLng) => {
+      setHistory([]);
+      say("降り立っています ...");
+      showPano({
+        location: point,
+        radius: 100,
+        source: window.google.maps.StreetViewSource.OUTDOOR,
+      });
+    },
+    [showPano, say],
+  );
+
+  // 隣接ノードへ移動（履歴に積む）。
+  const stepLink = useCallback(
+    (pano: string) => {
+      if (current) setHistory((h) => [...h, current.panoId]);
+      showPano({ pano });
+    },
+    [current, showPano],
+  );
+
+  // 見ている方向に最も近い隣をたどって進む。
+  const handleForward = useCallback(() => {
+    if (!current || current.links.length === 0) {
+      say("この先に道がありません", true);
       return;
     }
-    setBusy(true);
-    say(`道沿い${points.length}点を360°撮影して3D化中（数十秒〜）...`);
-    try {
-      const meta = await reconstructRoute(backend, {
-        points,
-        num_views: views,
-        fov: 90,
-      });
-      await refreshScenes();
-      loadScene(meta);
-    } catch (err) {
-      say((err as Error).message, true);
-    } finally {
-      setBusy(false);
-    }
-  }, [points, views, backend, refreshScenes, loadScene, say]);
+    const facing = facingRef.current;
+    const best = current.links.reduce((a, b) =>
+      headingDiff(b.heading, facing) < headingDiff(a.heading, facing) ? b : a,
+    );
+    stepLink(best.pano);
+  }, [current, stepLink, say]);
 
-  const handleClear = useCallback(() => {
-    setResetSignal((s) => s + 1);
-    setPoints([]);
+  const handleBack = useCallback(() => {
+    const prev = history[history.length - 1];
+    if (!prev) {
+      say("戻れる履歴がありません", true);
+      return;
+    }
+    setHistory((h) => h.slice(0, -1));
+    showPano({ pano: prev });
+  }, [history, showPano, say]);
+
+  const handleStepLink = useCallback(
+    (pano: string) => stepLink(pano),
+    [stepLink],
+  );
+
+  const handleFacingChange = useCallback((bearing: number) => {
+    facingRef.current = bearing;
   }, []);
+
+  const mapPoint: LatLng | null = current
+    ? { lat: current.lat, lng: current.lng }
+    : null;
 
   return (
     <div className="layout">
@@ -116,82 +175,25 @@ export default function Home() {
         </label>
 
         <section>
-          <div className="sectionHead">
-            <h2>蓄積シーン</h2>
-            <button type="button" onClick={refreshScenes}>
-              更新
-            </button>
-          </div>
-          <ul className="sceneList">
-            {scenes.length === 0 ? (
-              <li className="empty">（まだありません）</li>
-            ) : (
-              scenes.map((meta) => (
-                <li key={meta.id} onClick={() => loadScene(meta)}>
-                  {meta.id} —{" "}
-                  {meta.location?.lat != null && meta.location?.lng != null
-                    ? `${meta.location.lat.toFixed(4)}, ${meta.location.lng.toFixed(4)}`
-                    : meta.source}
-                </li>
-              ))
-            )}
-          </ul>
-        </section>
-
-        <section>
-          <h2>地図から道沿い3D化</h2>
+          <h2>現在地</h2>
           <div className="map">
             {mounted && config?.maps_api_key ? (
               <MapPicker
                 apiKey={config.maps_api_key}
-                maxPoints={config.max_route_points}
-                stepMeters={step}
-                resetSignal={resetSignal}
-                onPointsChange={onPointsChange}
+                current={mapPoint}
+                onPick={handlePick}
+                onReady={onMapsReady}
               />
             ) : (
               <div className="mapPlaceholder">
-                {config
-                  ? "Maps APIキーが利用できません"
-                  : "地図を読み込み中 ..."}
+                {config ? "Maps APIキーが利用できません" : "地図を読み込み中 ..."}
               </div>
             )}
           </div>
-
-          <div className="grid2">
-            <label className="inline">
-              視点数
-              <input
-                type="number"
-                min={2}
-                max={16}
-                value={views}
-                onChange={(e) => setViews(Number(e.target.value) || 6)}
-              />
-            </label>
-            <label className="inline">
-              間隔(m)
-              <input
-                type="number"
-                min={5}
-                max={100}
-                value={step}
-                onChange={(e) => setStep(Number(e.target.value) || 20)}
-              />
-            </label>
-          </div>
-          <div className="grid2 row2">
-            <button type="button" onClick={handleRoute} disabled={busy}>
-              {busy ? "生成中..." : "道沿いを3D化"}
-            </button>
-            <button type="button" className="ghost" onClick={handleClear}>
-              クリア
-            </button>
-          </div>
           <p className="hint">
-            地図を1回クリックで<strong>始点</strong>、もう1回で
-            <strong>終点</strong>。間に <strong>{points.length}</strong>{" "}
-            点を取り、各点を360°撮影して歩いてつながる3D空間に合成します。
+            地図を検索 / <strong>1回クリック</strong>でその地点に降り立ちます。
+            そこから<strong>両隣</strong>の Street View を都度たどって歩けます。
+            {busy && " （取得中…）"}
           </p>
         </section>
 
@@ -199,7 +201,18 @@ export default function Home() {
       </aside>
 
       <main className="main">
-        {mounted && <SceneViewer glbUrl={currentGlb} />}
+        {mounted && (
+          <TourViewer
+            base={backend}
+            equirect={equirect}
+            links={current?.links ?? []}
+            canBack={history.length > 0}
+            onForward={handleForward}
+            onBack={handleBack}
+            onStepLink={handleStepLink}
+            onFacingChange={handleFacingChange}
+          />
+        )}
       </main>
     </div>
   );

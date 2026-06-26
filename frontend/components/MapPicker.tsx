@@ -1,131 +1,104 @@
 "use client";
 
-// Google マップを表示し、クリックで始点→終点を選んで道沿いの点列を返す。
-// 地図は @vis.gl/react-google-maps、ポリラインは google.maps.Polyline を直接使う。
+// Google マップ。地点検索＋1クリックで降り立つ地点を選ぶ。
+// 現在地はピン1つで表示し、ツアー移動に追従する。経路探索はしない
+// （隣接ノードの取得は親側が StreetViewService で都度行う）。
 
 import {
   APIProvider,
   Map,
   Marker,
+  useApiIsLoaded,
   useMap,
   useMapsLibrary,
 } from "@vis.gl/react-google-maps";
-import { useEffect, useRef, useState } from "react";
-import { sampleLine, type LatLng } from "@/lib/geo";
+import { useEffect, useRef } from "react";
+import type { LatLng } from "@/lib/geo";
 
 interface MapPickerProps {
   apiKey: string;
-  maxPoints: number;
-  stepMeters: number;
-  resetSignal: number;
-  onPointsChange: (points: LatLng[]) => void;
+  current: LatLng | null;
+  onPick: (point: LatLng) => void;
+  onReady?: () => void;
 }
 
 const TOKYO: LatLng = { lat: 35.6595, lng: 139.7005 };
 
-// 始点・終点を結ぶポリラインを描画する補助コンポーネント。
-function RoutePolyline({ path }: { path: LatLng[] }) {
+// 地点検索ボックス（Places Autocomplete）。選択地点へ地図を移動する。
+function SearchBox() {
   const map = useMap();
-  const mapsLib = useMapsLibrary("maps");
-  const lineRef = useRef<google.maps.Polyline | null>(null);
+  const placesLib = useMapsLibrary("places");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!map || !mapsLib) return;
-    if (!lineRef.current) {
-      lineRef.current = new mapsLib.Polyline({
-        strokeColor: "#2f6fed",
-        strokeWeight: 4,
-        strokeOpacity: 0.9,
-      });
-      lineRef.current.setMap(map);
-    }
-    lineRef.current.setPath(path);
-  }, [map, mapsLib, path]);
+    if (!placesLib || !map || !inputRef.current) return;
+    const autocomplete = new placesLib.Autocomplete(inputRef.current, {
+      fields: ["geometry"],
+    });
+    const listener = autocomplete.addListener("place_changed", () => {
+      const location = autocomplete.getPlace().geometry?.location;
+      if (location) {
+        map.panTo(location);
+        map.setZoom(18);
+      }
+    });
+    return () => listener.remove();
+  }, [placesLib, map]);
 
-  useEffect(() => () => lineRef.current?.setMap(null), []);
-  return null;
+  return (
+    <input
+      ref={inputRef}
+      className="mapSearch"
+      type="text"
+      placeholder="地点を検索（例: 渋谷駅）"
+    />
+  );
 }
 
 function PickerInner({
-  maxPoints,
-  stepMeters,
-  resetSignal,
-  onPointsChange,
+  current,
+  onPick,
+  onReady,
 }: Omit<MapPickerProps, "apiKey">) {
   const map = useMap();
-  const [start, setStart] = useState<LatLng | null>(null);
-  const [end, setEnd] = useState<LatLng | null>(null);
-  const [points, setPoints] = useState<LatLng[]>([]);
+  const apiLoaded = useApiIsLoaded();
 
-  // クリック: 1回目=始点、2回目=終点、3回目以降=リセットして新しい始点。
+  useEffect(() => {
+    if (apiLoaded) onReady?.();
+  }, [apiLoaded, onReady]);
+
+  useEffect(() => {
+    if (map && current) map.panTo(current);
+  }, [map, current]);
+
   useEffect(() => {
     if (!map) return;
-    const listener = map.addListener(
-      "click",
-      (e: google.maps.MapMouseEvent) => {
-        if (!e.latLng) return;
-        const ll: LatLng = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-        if (!start || end) {
-          setStart(ll);
-          setEnd(null);
-          setPoints([]);
-          onPointsChange([]);
-        } else {
-          const pts = sampleLine(start, ll, stepMeters, maxPoints);
-          setEnd(ll);
-          setPoints(pts);
-          onPointsChange(pts);
-        }
-      },
-    );
+    const listener = map.addListener("click", (e: google.maps.MapMouseEvent) => {
+      if (e.latLng) onPick({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+    });
     return () => listener.remove();
-  }, [map, start, end, stepMeters, maxPoints, onPointsChange]);
+  }, [map, onPick]);
 
-  // 間隔(m) 変更を即反映する。
-  useEffect(() => {
-    if (start && end) {
-      const pts = sampleLine(start, end, stepMeters, maxPoints);
-      setPoints(pts);
-      onPointsChange(pts);
-    }
-    // start/end 変化時は上のクリック処理で更新するため stepMeters のみを見る。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepMeters]);
-
-  // 親からのリセット要求。
-  useEffect(() => {
-    if (resetSignal === 0) return;
-    setStart(null);
-    setEnd(null);
-    setPoints([]);
-    onPointsChange([]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetSignal]);
-
-  return (
-    <>
-      {start && <Marker position={start} label="始" />}
-      {end && <Marker position={end} label="終" />}
-      {start && end && <RoutePolyline path={points} />}
-    </>
-  );
+  return current ? <Marker position={current} /> : null;
 }
 
 export default function MapPicker({ apiKey, ...rest }: MapPickerProps) {
   return (
     <APIProvider apiKey={apiKey}>
-      <Map
-        defaultCenter={TOKYO}
-        defaultZoom={18}
-        gestureHandling="greedy"
-        disableDefaultUI={false}
-        streetViewControl={false}
-        mapTypeControl={false}
-        fullscreenControl={false}
-        style={{ width: "100%", height: "100%" }}
-      >
-        <PickerInner {...rest} />
-      </Map>
+      <div style={{ position: "relative", width: "100%", height: "100%" }}>
+        <SearchBox />
+        <Map
+          defaultCenter={rest.current ?? TOKYO}
+          defaultZoom={18}
+          gestureHandling="greedy"
+          streetViewControl={false}
+          mapTypeControl={false}
+          fullscreenControl={false}
+          style={{ width: "100%", height: "100%" }}
+        >
+          <PickerInner {...rest} />
+        </Map>
+      </div>
     </APIProvider>
   );
 }

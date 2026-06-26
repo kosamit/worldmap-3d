@@ -134,6 +134,26 @@ body {
   background: #11151b;
 }
 
+.mapSearch {
+  position: absolute;
+  z-index: 5;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  width: calc(100% - 16px);
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid #3a434f;
+  background: rgba(17, 21, 27, 0.92);
+  color: #e6e9ed;
+  font-size: 0.82rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.mapSearch::placeholder {
+  color: #8a93a0;
+}
+
 .mapPlaceholder {
   display: flex;
   align-items: center;
@@ -222,6 +242,37 @@ body {
   margin: 0 0 8px;
 }
 
+.tourNav {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(8, 11, 15, 0.6);
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  color: #e6e9ed;
+}
+
+.tourNav button {
+  background: #2f6fed;
+  border: none;
+  color: #fff;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.tourNav button:disabled {
+  background: #3a434f;
+  cursor: not-allowed;
+}
+
 .hud {
   position: absolute;
   left: 12px;
@@ -233,4 +284,105 @@ body {
   padding: 4px 8px;
   border-radius: 6px;
   pointer-events: none;
+}
+
+/* ---- コンパス ---- */
+.compass {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: rgba(8, 11, 15, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.compassDial {
+  position: absolute;
+  inset: 0;
+}
+
+.compassDial span {
+  position: absolute;
+  left: 50%;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #e6e9ed;
+  transform: translateX(-50%);
+}
+
+.compassDial .cN {
+  top: 4px;
+  color: #ff6b6b;
+}
+.compassDial .cS {
+  bottom: 4px;
+}
+.compassDial .cE {
+  right: 6px;
+  top: 50%;
+  left: auto;
+  transform: translateY(-50%);
+}
+.compassDial .cW {
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.compassNeedle {
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 10px solid #ffd166;
+}
+
+.compassLabel {
+  position: absolute;
+  bottom: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 0.74rem;
+  color: #e6e9ed;
+  background: rgba(8, 11, 15, 0.6);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+/* ---- 移動矢印 ---- */
+.panoArrows {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.panoArrows button {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(47, 111, 237, 0.85);
+  color: #fff;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.panoArrows button:hover {
+  background: #4480ff;
+}
+
+.panoArrows .backBtn {
+  background: rgba(44, 51, 61, 0.85);
 }

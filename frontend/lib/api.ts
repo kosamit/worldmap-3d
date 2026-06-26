@@ -34,6 +34,28 @@ export interface RouteParams {
   fov: number;
 }
 
+export interface TourNode {
+  index: number;
+  lat: number;
+  lng: number;
+  pano_id?: string | null;
+  x: number;
+  z: number;
+  faces: Record<string, string>;
+}
+
+export interface TourMeta {
+  id: string;
+  origin: { lat: number; lng: number };
+  node_count: number;
+  nodes: TourNode[];
+}
+
+export interface PanoResult {
+  pano_id: string;
+  equirect: string;
+}
+
 function normalizeBase(url: string): string {
   return url.replace(/\/+$/, "");
 }
@@ -82,4 +104,41 @@ export async function reconstructRoute(
 
 export function glbUrl(base: string, meta: SceneMeta): string {
   return `${normalizeBase(base)}${meta.glb_url}`;
+}
+
+export async function fetchPano(
+  base: string,
+  params: { panoId: string; outWidth?: number },
+): Promise<PanoResult> {
+  const form = new FormData();
+  form.append("pano_id", params.panoId);
+  if (params.outWidth) form.append("out_width", String(params.outWidth));
+  const res = await fetch(`${normalizeBase(base)}/api/streetview/cube`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(`パノラマ取得に失敗 (${res.status}): ${detail}`);
+  }
+  return res.json();
+}
+
+export async function fetchTour(
+  base: string,
+  params: { points: LatLng[]; faceSize?: number },
+): Promise<TourMeta> {
+  const form = new FormData();
+  form.append("points", JSON.stringify(params.points));
+  if (params.faceSize) form.append("face_size", String(params.faceSize));
+
+  const res = await fetch(`${normalizeBase(base)}/api/route/tour`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(`Street Viewツアーの生成に失敗 (${res.status}): ${detail}`);
+  }
+  return res.json();
 }

@@ -36,7 +36,9 @@ from .route import (
     fetch_route_panoramas,
     snap_route_points,
 )
+from .equirect import build_equirectangular
 from .streetview import fetch_streetview, fetch_streetview_panorama
+from .tour import MAX_TOUR_NODES, build_tour
 
 MAX_PANORAMA_VIEWS = 16
 # パノラマは視点数ぶん連結するため、1 視点あたりの解像度を下げて総頂点数を抑える。
@@ -51,7 +53,11 @@ app.add_middleware(
 )
 
 storage.DATA_DIR.mkdir(parents=True, exist_ok=True)
+storage.TOURS_DIR.mkdir(parents=True, exist_ok=True)
+storage.PANOS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/scenes", StaticFiles(directory=str(storage.DATA_DIR)), name="scenes")
+app.mount("/tours", StaticFiles(directory=str(storage.TOURS_DIR)), name="tours")
+app.mount("/panos", StaticFiles(directory=str(storage.PANOS_DIR)), name="panos")
 
 
 # 推論パイプライン(transformers)は非リエントラント。同時実行クラッシュを防ぐため直列化。
@@ -252,6 +258,76 @@ def reconstruct_route(
         return meta
     except Exception as exc:  # noqa: BLE001 - 500 を HTTPException 化して CORS ヘッダを維持
         raise HTTPException(status_code=500, detail=f"ルート3D生成に失敗しました: {exc}")
+
+
+@app.post("/api/streetview/cube")
+def streetview_pano(
+    pano_id: str = Form(...),
+    lat: float = Form(0.0),
+    lng: float = Form(0.0),
+    out_width: int = Form(2560),
+    api_key: str | None = Form(None),
+):
+    """1 パノラマ分の equirectangular(全天球)画像を返す（pano_id でキャッシュ）。
+
+    多数の狭角タイルを再投影して高精細にする。フロントは隣接リンクを辿りながら
+    進む先のパノラマだけを都度取得する。
+    """
+    out_width = max(1024, min(4096, out_width))
+    out_dir = storage.pano_dir(pano_id)
+    dir_name = out_dir.name
+    equirect_path = out_dir / "equirect.jpg"
+
+    if not equirect_path.exists():
+        try:
+            image = build_equirectangular(
+                lat, lng, api_key=api_key, pano=pano_id, out_width=out_width
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"パノラマ取得に失敗: {exc}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        image.save(str(equirect_path), format="JPEG", quality=85)
+
+    return {
+        "pano_id": pano_id,
+        "equirect": f"/panos/{dir_name}/equirect.jpg",
+    }
+
+
+@app.post("/api/route/tour")
+def route_tour(
+    points: str = Form(...),
+    face_size: int = Form(640),
+    api_key: str | None = Form(None),
+):
+    """地図で選んだ道沿いの点列を、写真パノラマで繋いだ歩けるツアーにする。
+
+    深度メッシュ化はせず、各ノードのキューブ6面写真をそのまま使う。
+    points は [{"lat":.., "lng":..}, ...] の JSON 文字列。
+    """
+    try:
+        raw = json.loads(points)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"points が不正な JSON です: {exc}")
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(status_code=400, detail="points は 1 点以上の配列が必要です")
+    try:
+        coords = [(float(p["lat"]), float(p["lng"])) for p in raw]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"各点は lat/lng を持つ必要があります: {exc}"
+        )
+    coords = coords[:MAX_TOUR_NODES]
+    face_size = max(256, min(640, face_size))
+
+    try:
+        return build_tour(coords, api_key=api_key, face_size=face_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 - 500 を HTTPException 化して CORS ヘッダを維持
+        raise HTTPException(status_code=500, detail=f"ツアー生成に失敗しました: {exc}")
 
 
 @app.get("/api/scenes")

@@ -5,10 +5,26 @@ import uuid
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "scenes"
+TOURS_DIR = Path(__file__).resolve().parent.parent / "data" / "tours"
+PANOS_DIR = Path(__file__).resolve().parent.parent / "data" / "panos"
+
+
+def pano_dir(pano_id: str) -> Path:
+    # pano_id にはファイル名に使えない文字が含まれうるため安全化する。
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in pano_id)
+    return PANOS_DIR / safe
 
 
 def new_scene_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def new_tour_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def tour_dir(tour_id: str) -> Path:
+    return TOURS_DIR / tour_id
 
 
 def scene_dir(scene_id: str) -> Path:

@@ -30,6 +30,14 @@ let center = new THREE.Vector3(), radius = 10;
 window.ready = false;
 
 new GLTFLoader().load(glb, (gltf) => {
+  // アプリと同じく無光沢で頂点色（写真色）をそのまま表示する。
+  gltf.scene.traverse((o) => {
+    if (o.isMesh) {
+      o.material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      const c = o.geometry.attributes.color;
+      if (c) c.normalized = c.normalized; // COLOR_0 をそのまま使う
+    }
+  });
   scene.add(gltf.scene);
   // 中心と「核」半径を、外れ値(遠方の空など)に強い分位点で求める。
   let cx = 0, cy = 0, cz = 0, n = 0;
@@ -65,6 +73,18 @@ window.setView = (azDeg, elDeg, rFactor) => {
     center.z + r * Math.cos(el) * Math.cos(az)
   );
   camera.lookAt(center);
+  renderer.render(scene, camera);
+};
+
+// 内部から見回す（実際に歩く視点に近い）。中心付近に立って方位azを向く。
+window.setInterior = (azDeg, elDeg) => {
+  const az = azDeg * Math.PI / 180, el = (elDeg || 0) * Math.PI / 180;
+  camera.position.set(center.x, center.y + radius * 0.08, center.z);
+  camera.lookAt(
+    center.x + Math.sin(az) * Math.cos(el),
+    center.y + radius * 0.08 + Math.sin(el),
+    center.z - Math.cos(az) * Math.cos(el)
+  );
   renderer.render(scene, camera);
 };
 </script>

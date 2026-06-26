@@ -112,20 +112,27 @@ async function main() {
     if (!ok) throw new Error("orbit.html が GLB を読み込めませんでした");
     summary.radius = await page.evaluate(() => window.radius);
 
+    // 外周から回す(orbit=立体の証明) → 内部から見回す(interior=歩く体験)
+    let idx = 0;
     const frames = [];
+    const grab = async (tag) => {
+      const f = path.join(args.out, `frame_${String(idx++).padStart(2, "0")}.png`);
+      try { await page.screenshot({ path: f, timeout: 20000 }); frames.push(f); } catch { summary.errors.push("shot fail " + tag); }
+    };
     for (let i = 0; i < args.frames; i++) {
-      const az = (360 / args.frames) * i;
-      await page.evaluate(([a, e]) => window.setView(a, e, 1.3), [az, args.el]);
-      await page.waitForTimeout(400);
-      const f = path.join(args.out, `frame_${String(i).padStart(2, "0")}.png`);
-      try { await page.screenshot({ path: f, timeout: 20000 }); frames.push(f); } catch { summary.errors.push("shot fail az=" + az); }
+      await page.evaluate(([a, e]) => window.setView(a, e, 1.3), [(360 / args.frames) * i, args.el]);
+      await page.waitForTimeout(350); await grab("orbit" + i);
+    }
+    for (let i = 0; i < args.frames; i++) {
+      await page.evaluate((a) => window.setInterior(a, -3), (360 / args.frames) * i);
+      await page.waitForTimeout(350); await grab("interior" + i);
     }
     summary.frames = frames.length;
-    log(`rendered ${frames.length}/${args.frames} angles`);
+    log(`rendered ${frames.length} frames (orbit + interior)`);
 
-    // 5) GIF 生成（ffmpeg があれば）
+    // 5) GIF 生成（ffmpeg があれば）。前半=外周, 後半=内部見回し。
     const gif = path.join(args.out, "turntable.gif");
-    const ff = spawnSync("ffmpeg", ["-y", "-framerate", "2", "-i", path.join(args.out, "frame_%02d.png"), "-vf", "scale=500:-1", gif], { encoding: "utf8" });
+    const ff = spawnSync("ffmpeg", ["-y", "-framerate", "2", "-i", path.join(args.out, "frame_%02d.png"), "-vf", "scale=520:-1", gif], { encoding: "utf8" });
     if (ff.status === 0) { summary.gif = gif; log("gif: " + gif); }
     else summary.errors.push("ffmpeg unavailable or failed");
 

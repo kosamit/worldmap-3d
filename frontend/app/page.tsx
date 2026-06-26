@@ -99,6 +99,8 @@ export default function Home() {
   // 表示モード: パノラマ写真 or 深度メッシュ(3D化)
   const [mode, setMode] = useState<"pano" | "mesh">("pano");
   const [meshGlb, setMeshGlb] = useState<string | null>(null);
+  // 3D化した時点でパノラマで向いていた方位（北=0,時計回り）。3D初期視線に使う。
+  const [sceneHeadingDeg, setSceneHeadingDeg] = useState<number | null>(null);
   const [building3d, setBuilding3d] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -306,6 +308,7 @@ export default function Home() {
         },
         (p) => setProgress(p),
       );
+      setSceneHeadingDeg(facingRef.current);
       setMeshGlb(glbUrl(backend, meta));
       setMode("mesh");
       say(`3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
@@ -357,6 +360,7 @@ export default function Home() {
         },
         (p) => setProgress(p),
       );
+      setSceneHeadingDeg(facingRef.current);
       setMeshGlb(glbUrl(backend, meta));
       setMode("mesh");
       say(`高精度3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
@@ -797,7 +801,7 @@ export default function Home() {
 
       <main className="main">
         {mounted && mode === "mesh" ? (
-          <SceneViewer glbUrl={meshGlb} />
+          <SceneViewer glbUrl={meshGlb} initialHeadingDeg={sceneHeadingDeg} />
         ) : (
           mounted && (
             <TourViewer

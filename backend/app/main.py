@@ -199,7 +199,7 @@ def config():
             {"id": "depth-anything/DA3-GIANT", "label": "DA3 Giant（最高品質・重い）"},
         ],
         "multiview_defaults": {
-            "max_views": 1,
+            "max_views": 3,
             "heading_count": 8,
             "pitch_count": 3,
             "radius_m": 12.0,
@@ -207,7 +207,7 @@ def config():
             "max_width": 256,
             "conf_percentile": 40.0,
             "ensure_percentile": 90.0,
-            "far_clip_m": 35.0,
+            "far_clip_m": 0.0,
             "height_clip_m": 40.0,
             "process_res": 504,
             "process_res_method": "upper_bound_resize",
@@ -516,7 +516,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
 def reconstruct_multiview(
     lat: float = Form(...),
     lng: float = Form(...),
-    max_views: int = Form(1),
+    max_views: int = Form(3),
     heading_count: int = Form(8),
     radius_m: float = Form(12.0),
     pitch: float = Form(0.0),
@@ -525,7 +525,7 @@ def reconstruct_multiview(
     max_width: int = Form(256),
     conf_percentile: float = Form(40.0),
     ensure_percentile: float = Form(90.0),
-    far_clip_m: float = Form(35.0),
+    far_clip_m: float = Form(0.0),
     height_clip_m: float = Form(40.0),
     process_res: int = Form(504),
     process_res_method: str = Form("upper_bound_resize"),
@@ -554,8 +554,8 @@ def reconstruct_multiview(
         "max_width": int(max(64, min(504, max_width))),
         "conf_percentile": max(0.0, min(95.0, float(conf_percentile))),
         "ensure_percentile": max(50.0, min(100.0, float(ensure_percentile))),
-        "far_clip_m": max(5.0, min(200.0, float(far_clip_m))),
-        "height_clip_m": max(2.0, min(50.0, float(height_clip_m))),
+        "far_clip_m": max(0.0, min(500.0, float(far_clip_m))),    # 0=無効（奥まで表示）
+        "height_clip_m": max(0.0, min(200.0, float(height_clip_m))),  # 0=無効
         "process_res": int(max(168, min(1008, process_res))),
         "process_res_method": prm,
         "use_ray_pose": bool(use_ray_pose),

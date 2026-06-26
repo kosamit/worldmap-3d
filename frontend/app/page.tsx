@@ -70,13 +70,13 @@ interface MultiParams {
 
 const FALLBACK_MULTI: MultiParams = {
   depthModel: "",
-  maxViews: 1,
+  maxViews: 3,
   headingCount: 8,
   pitchCount: 3,
   radiusM: 12,
   confPercentile: 40,
   ensurePercentile: 90,
-  farClipM: 45,
+  farClipM: 0,
   heightClipM: 40,
   processRes: 504,
   processResMethod: "upper_bound_resize",
@@ -725,11 +725,11 @@ export default function Home() {
                       />
                     </label>
                     <label className="field">
-                      遠方クリップ (m)
+                      遠方クリップ (m, 0=無効)
                       <input
                         type="number"
-                        min={5}
-                        max={200}
+                        min={0}
+                        max={500}
                         step={5}
                         value={multi.farClipM}
                         onChange={(e) =>
@@ -739,12 +739,12 @@ export default function Home() {
                       />
                     </label>
                     <label className="field">
-                      頭上クリップ (m)
+                      頭上クリップ (m, 0=無効)
                       <input
                         type="number"
-                        min={2}
-                        max={50}
-                        step={1}
+                        min={0}
+                        max={200}
+                        step={5}
                         value={multi.heightClipM}
                         onChange={(e) =>
                           setMultiParam("heightClipM", Number(e.target.value))
@@ -862,7 +862,8 @@ export default function Home() {
                     埋めるピッチ方向の枚数（3=下/水平/上）。<b>収集半径</b>は地点数≥2のときだけ効きます。
                     <b>視点位置をGPSで固定</b>は複数視点時のズレ（ぐちゃぐちゃ）を防ぐ最重要オプション。
                     <b>レイベースのポーズ推定</b>は各画素レイから RANSAC でカメラを解く別法。
-                    空・遠景は遠方/頭上クリップで除去します。
+                    <b>遠方クリップ＝0で無効</b>（奥まで表示）。値を入れると中心からその距離より
+                    遠い面を除去、頭上クリップは天井側を削ります（0で無効）。
                   </p>
                 </>
               )}

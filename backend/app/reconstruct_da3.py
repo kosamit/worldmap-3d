@@ -566,9 +566,13 @@ def build_multiview_pointcloud(
         np.percentile(rv[:, 1], 5)
     )
 
-    # クリップ：遠方(水平) と 頭上(地面からの高さ)
+    # クリップ：遠方(水平) と 頭上(地面からの高さ)。0以下なら無効（クリップしない）。
     horiz = np.linalg.norm(verts[:, [0, 2]], axis=1)
-    bad = (horiz > far_clip_m) | (verts[:, 1] > ground_y + height_clip_m)
+    bad = np.zeros(len(verts), dtype=bool)
+    if far_clip_m and far_clip_m > 0:
+        bad |= horiz > far_clip_m
+    if height_clip_m and height_clip_m > 0:
+        bad |= verts[:, 1] > ground_y + height_clip_m
 
     scene = trimesh.Scene()
     if mesh:

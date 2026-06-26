@@ -77,7 +77,7 @@ const FALLBACK_MULTI: MultiParams = {
   confPercentile: 40,
   ensurePercentile: 90,
   farClipM: 45,
-  heightClipM: 9,
+  heightClipM: 40,
   processRes: 504,
   processResMethod: "upper_bound_resize",
   useRayPose: true,

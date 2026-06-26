@@ -448,20 +448,27 @@ def _fetch_streetview_retry(*args, attempts: int = 3, **kwargs):
 
 
 class _Heartbeat:
-    """長い推論中、経過秒を進捗メッセージに出して「固まった」ように見せない。"""
+    """長い推論(1回のブロッキング呼び出し)中も、経過時間に応じて進捗バーをじわじわ
+    進めて「固まった/止まった」誤認を防ぐ。実際の細かな進捗は取れないため、想定所要
+    時間 est_seconds に対する経過割合で 95% までクリープさせる（完了時に本処理が
+    100%相当へ進める）。"""
 
-    def __init__(self, progress, phase, base_msg):
+    def __init__(self, progress, phase, base_msg, est_seconds: float):
         self._progress = progress
         self._phase = phase
         self._base = base_msg
+        self._est = max(5.0, float(est_seconds))
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
         start = time.monotonic()
-        while not self._stop.wait(2.0):
-            sec = int(time.monotonic() - start)
-            self._progress(self._phase, 0, 1, f"{self._base}（経過 {sec}秒）")
+        while not self._stop.wait(1.0):
+            sec = time.monotonic() - start
+            frac = min(0.95, sec / self._est)
+            # step/total=1000 ぶんでフェーズ内の割合を渡す → バーがフェーズ内を進む。
+            self._progress(self._phase, int(frac * 1000), 1000,
+                           f"{self._base}（経過 {int(sec)}秒）")
 
     def __enter__(self):
         self._t.start()
@@ -521,7 +528,9 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
         with _infer_lock:
             base = f"DA3 マルチビュー推論中（{total_imgs}枚・モデルロード含む）"
             progress("depth", 0, 1, base + " ...")
-            with _Heartbeat(progress, "depth", base):
+            # 想定所要: 1枚あたり約0.5秒＋初回モデルロード余裕。バーのクリープ用。
+            est = 12.0 + 0.5 * total_imgs
+            with _Heartbeat(progress, "depth", base, est):
                 pred = depth_da3.infer_multiview(
                     images,
                     model_id=params["depth_model"],

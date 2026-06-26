@@ -16,6 +16,7 @@ import io
 import json
 import os
 import threading
+import time
 import uuid
 
 from dotenv import load_dotenv
@@ -415,6 +416,61 @@ def _pitch_rows(pitch_count: int) -> list[float]:
     return presets.get(int(pitch_count), [0.0, -45.0, 45.0])
 
 
+def _free_cuda() -> None:
+    """CUDA キャッシュを解放（OOM 後に次回以降の実行が巻き込まれないように）。"""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
+def _is_oom(exc: Exception) -> bool:
+    return (
+        exc.__class__.__name__ == "OutOfMemoryError"
+        or "out of memory" in str(exc).lower()
+    )
+
+
+def _fetch_streetview_retry(*args, attempts: int = 3, **kwargs):
+    """fetch_streetview を数回リトライ（ネットワーク瞬断で全体が落ちるのを防ぐ）。"""
+    last = None
+    for k in range(attempts):
+        try:
+            return fetch_streetview(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            time.sleep(0.6 * (k + 1))
+    raise last
+
+
+class _Heartbeat:
+    """長い推論中、経過秒を進捗メッセージに出して「固まった」ように見せない。"""
+
+    def __init__(self, progress, phase, base_msg):
+        self._progress = progress
+        self._phase = phase
+        self._base = base_msg
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        start = time.monotonic()
+        while not self._stop.wait(2.0):
+            sec = int(time.monotonic() - start)
+            self._progress(self._phase, 0, 1, f"{self._base}（経過 {sec}秒）")
+
+    def __enter__(self):
+        self._t.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+
+
 def _run_multiview_job(jid, lat, lng, params, api_key):
     """DA3 マルチビューで整合メッシュを作るジョブ本体（別スレッド）。"""
     progress = _job_progress(jid)
@@ -452,7 +508,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                     done = len(images)
                     progress("street_view", done, total_imgs,
                              f"Street View 取得 {done + 1}/{total_imgs}（{len(viewpoints)}地点）")
-                    image, _ = fetch_streetview(
+                    image, _ = _fetch_streetview_retry(
                         vp["lat"], vp["lng"], heading=h, pitch=p,
                         fov=params["fov"], api_key=api_key, pano=vp.get("pano_id"),
                     )
@@ -463,16 +519,17 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
 
         # 2. DA3 マルチビュー推論（フェーズ: depth）。推論は直列化。
         with _infer_lock:
-            progress("depth", 0, 1,
-                     f"DA3 マルチビュー推論中（{total_imgs}枚・モデルロード含む）...")
-            pred = depth_da3.infer_multiview(
-                images,
-                model_id=params["depth_model"],
-                process_res=params["process_res"],
-                process_res_method=params["process_res_method"],
-                use_ray_pose=params["use_ray_pose"],
-                ref_view_strategy=params["ref_view_strategy"],
-            )
+            base = f"DA3 マルチビュー推論中（{total_imgs}枚・モデルロード含む）"
+            progress("depth", 0, 1, base + " ...")
+            with _Heartbeat(progress, "depth", base):
+                pred = depth_da3.infer_multiview(
+                    images,
+                    model_id=params["depth_model"],
+                    process_res=params["process_res"],
+                    process_res_method=params["process_res_method"],
+                    use_ray_pose=params["use_ray_pose"],
+                    ref_view_strategy=params["ref_view_strategy"],
+                )
             progress("depth", 1, 1,
                      "深度＋カメラポーズ推定 完了"
                      + ("（レイベース）" if params["use_ray_pose"] else ""))
@@ -530,8 +587,18 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
     except ValueError as exc:
         _update_job(jid, status="error", error=str(exc), message=f"失敗: {exc}")
     except Exception as exc:  # noqa: BLE001
-        _update_job(jid, status="error", error=str(exc),
-                    message=f"高精度3D化に失敗しました: {exc}")
+        if _is_oom(exc):
+            _update_job(
+                jid, status="error", error=str(exc),
+                message="GPUメモリ不足で停止しました。方向数・上下段数・地点数・"
+                        "処理解像度のいずれかを下げて再実行してください。",
+            )
+        else:
+            _update_job(jid, status="error", error=str(exc),
+                        message=f"高精度3D化に失敗しました: {exc}")
+    finally:
+        # 成功・失敗いずれでも CUDA を解放（次回実行が巻き込まれないように）。
+        _free_cuda()
 
 
 @app.post("/api/reconstruct/multiview")

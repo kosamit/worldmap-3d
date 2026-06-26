@@ -215,6 +215,7 @@ def config():
             "drop_sky": True,
             "filter_black_bg": False,
             "filter_white_bg": False,
+            "anchor_gps": True,
         },
         "multiview_ref_view_strategies": [
             {"id": "saddle_balanced", "label": "saddle_balanced（推奨・バランス）"},
@@ -450,6 +451,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                 drop_sky=params["drop_sky"],
                 filter_black_bg=params["filter_black_bg"],
                 filter_white_bg=params["filter_white_bg"],
+                anchor_gps=params["anchor_gps"],
                 far_clip_m=params["far_clip_m"],
                 height_clip_m=params["height_clip_m"],
                 progress=progress,
@@ -509,6 +511,7 @@ def reconstruct_multiview(
     drop_sky: bool = Form(True),
     filter_black_bg: bool = Form(False),
     filter_white_bg: bool = Form(False),
+    anchor_gps: bool = Form(True),
     depth_model: str | None = Form(None),
     api_key: str | None = Form(None),
 ):
@@ -536,6 +539,7 @@ def reconstruct_multiview(
         "drop_sky": bool(drop_sky),
         "filter_black_bg": bool(filter_black_bg),
         "filter_white_bg": bool(filter_white_bg),
+        "anchor_gps": bool(anchor_gps),
         "depth_model": (depth_model or "").strip() or None,
     }
     jid = _new_job()

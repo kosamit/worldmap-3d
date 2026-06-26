@@ -64,6 +64,7 @@ interface MultiParams {
   dropSky: boolean;
   filterBlackBg: boolean;
   filterWhiteBg: boolean;
+  anchorGps: boolean;
 }
 
 const FALLBACK_MULTI: MultiParams = {
@@ -82,6 +83,7 @@ const FALLBACK_MULTI: MultiParams = {
   dropSky: true,
   filterBlackBg: false,
   filterWhiteBg: false,
+  anchorGps: true,
 };
 
 export default function Home() {
@@ -159,6 +161,7 @@ export default function Home() {
             dropSky: m?.drop_sky ?? FALLBACK_MULTI.dropSky,
             filterBlackBg: m?.filter_black_bg ?? FALLBACK_MULTI.filterBlackBg,
             filterWhiteBg: m?.filter_white_bg ?? FALLBACK_MULTI.filterWhiteBg,
+            anchorGps: m?.anchor_gps ?? FALLBACK_MULTI.anchorGps,
           });
         }
         if (!cancelled && !cfg.has_maps_key) {
@@ -349,6 +352,7 @@ export default function Home() {
           dropSky: multi.dropSky,
           filterBlackBg: multi.filterBlackBg,
           filterWhiteBg: multi.filterWhiteBg,
+          anchorGps: multi.anchorGps,
           depthModel: multi.depthModel || null,
         },
         (p) => setProgress(p),
@@ -718,6 +722,17 @@ export default function Home() {
                     <label className="checkField">
                       <input
                         type="checkbox"
+                        checked={multi.anchorGps}
+                        onChange={(e) =>
+                          setMultiParam("anchorGps", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      視点位置をGPSで固定（推奨）
+                    </label>
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
                         checked={multi.useRayPose}
                         onChange={(e) =>
                           setMultiParam("useRayPose", e.target.checked)
@@ -761,10 +776,11 @@ export default function Home() {
                     </label>
                   </div>
                   <p className="hint">
-                    地点数×方向数 の画像をDA3に一括投入して整合。<b>空除去</b>は DA3 の
-                    物体判定（sky マスク）でぐちゃぐちゃの主因を根元から除去します。
-                    <b>レイベースのポーズ推定</b>は各画素レイから RANSAC でカメラを解く別法。
-                    信頼度カット（下限）と上限クランプの間で適応しきい値が決まります。
+                    地点数×方向数 の画像をDA3に一括投入して整合。<b>視点位置をGPSで固定</b>は
+                    DA3が圧縮しがちな視点間距離を実GPS座標で上書きし、複数視点を重ねたときの
+                    「ぐちゃぐちゃ」を防ぐ最重要オプションです。<b>レイベースのポーズ推定</b>は
+                    各画素レイから RANSAC でカメラを解く別法。信頼度カット（下限）と上限クランプ
+                    の間で適応しきい値が決まります。空・遠景は遠方/頭上クリップで除去します。
                   </p>
                 </>
               )}

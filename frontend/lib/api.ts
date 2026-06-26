@@ -35,6 +35,7 @@ export interface MultiviewDefaults {
   drop_sky: boolean;
   filter_black_bg: boolean;
   filter_white_bg: boolean;
+  anchor_gps: boolean;
 }
 
 export interface AppConfig {
@@ -260,6 +261,7 @@ export interface MultiviewParams {
   dropSky?: boolean;
   filterBlackBg?: boolean;
   filterWhiteBg?: boolean;
+  anchorGps?: boolean;
   depthModel?: string | null;
 }
 
@@ -302,6 +304,8 @@ export async function reconstructMultiview(
     form.append("filter_black_bg", String(params.filterBlackBg));
   if (params.filterWhiteBg != null)
     form.append("filter_white_bg", String(params.filterWhiteBg));
+  if (params.anchorGps != null)
+    form.append("anchor_gps", String(params.anchorGps));
   if (params.depthModel) form.append("depth_model", params.depthModel);
 
   const res = await fetch(`${root}/api/reconstruct/multiview`, {

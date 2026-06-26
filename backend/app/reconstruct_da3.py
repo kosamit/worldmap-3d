@@ -14,6 +14,8 @@
 カメラ間距離の比から、メートルスケールを復元する。
 """
 
+import math
+
 import numpy as np
 import trimesh
 
@@ -22,6 +24,70 @@ from .streetview import haversine_m
 
 def _noop(*_args, **_kwargs):
     pass
+
+
+def _umeyama(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """相似変換 (s, R, t) を最小二乗で解く。dst ≈ s * R @ src + t。
+
+    src, dst: (M,3)。点数が少ない/退化しているときは恒等に近い安全値を返す。
+    """
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    m = src.shape[0]
+    mu_s = src.mean(axis=0)
+    mu_d = dst.mean(axis=0)
+    sc = src - mu_s
+    dc = dst - mu_d
+    cov = (dc.T @ sc) / m
+    u, d, vt = np.linalg.svd(cov)
+    s_mat = np.eye(3)
+    if np.linalg.det(u) * np.linalg.det(vt) < 0:
+        s_mat[2, 2] = -1.0
+    R = u @ s_mat @ vt
+    var_s = (sc ** 2).sum() / m
+    scale = float((d * np.diag(s_mat)).sum() / var_s) if var_s > 1e-12 else 1.0
+    t = mu_d - scale * R @ mu_s
+    return scale, R, t
+
+
+def _umeyama_2d(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """水平面(2D)の相似変換 (s, R(2x2), t) を解く。dst ≈ s * R @ src + t。
+
+    視点中心は地面上でほぼ同一平面に乗るため、鉛直まわりの「向き(ヨー)」と
+    スケールだけを 2D で安定に解く。鉛直方向は別途 DA3 の重力で固定する。
+    """
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    m = src.shape[0]
+    mu_s = src.mean(axis=0)
+    mu_d = dst.mean(axis=0)
+    sc = src - mu_s
+    dc = dst - mu_d
+    cov = (dc.T @ sc) / m
+    u, d, vt = np.linalg.svd(cov)
+    s_mat = np.eye(2)
+    if np.linalg.det(u) * np.linalg.det(vt) < 0:
+        s_mat[1, 1] = -1.0
+    R = u @ s_mat @ vt
+    var_s = (sc ** 2).sum() / m
+    scale = float((d * np.diag(s_mat)).sum() / var_s) if var_s > 1e-9 else 1.0
+    t = mu_d - scale * R @ mu_s
+    return scale, R, t
+
+
+def _viewpoint_enu(viewpoints: list[dict]) -> np.ndarray:
+    """各視点を、先頭視点を原点とする局所 ENU メートル座標 (V,3) で返す。
+
+    x=東(east), y=北(north), z=上(0)。緯度経度の微小差を平面近似でメートル化する。
+    """
+    lat0 = float(viewpoints[0]["lat"])
+    lng0 = float(viewpoints[0]["lng"])
+    coslat = math.cos(math.radians(lat0))
+    out = np.zeros((len(viewpoints), 3), dtype=np.float64)
+    for i, vp in enumerate(viewpoints):
+        out[i, 0] = (float(vp["lng"]) - lng0) * 111320.0 * coslat  # east
+        out[i, 1] = (float(vp["lat"]) - lat0) * 111320.0          # north
+    return out
 
 
 def _as_homogeneous44(ext: np.ndarray) -> np.ndarray:
@@ -252,6 +318,7 @@ def build_multiview_pointcloud(
     sky_depth_percentile: float = 95.0,
     filter_black_bg: bool = False,
     filter_white_bg: bool = False,
+    anchor_gps: bool = True,
     far_clip_m: float = 35.0,
     height_clip_m: float = 9.0,
     max_points: int = 600000,
@@ -264,6 +331,13 @@ def build_multiview_pointcloud(
     出力する「空（オブジェクト）判定マスク」と「適応的な信頼度しきい値」を使って
     ぐちゃぐちゃの主因（空・遠景・低信頼の溶け）を根元から除去する。
 
+    GPS アンカー（anchor_gps=True・視点2地点以上）:
+      DA3 は視点間の並進（ベースライン）を実測の数分の一に圧縮し、しかも一定でない
+      ため、複数視点を重ねると位置がズレて「ぐちゃぐちゃ」になる。これを防ぐため
+      DA3 の各視点の「深度」と「向き(回転)」だけ採用し、視点の「位置」は実 GPS 座標で
+      固定する。DA3 視点配置→実ENU配置のヨー＋スケールを 2D Umeyama で合わせ、鉛直は
+      DA3 の重力で固定、各視点中心を実 GPS に스ナップする。
+
     パラメータ（DA3 のフルオプションを露出）:
       max_width:           各ビューの水平サンプル解像度（点密度）。
       conf_percentile:     適応信頼度しきい値の下位パーセンタイル（小さいほど残す）。
@@ -274,6 +348,8 @@ def build_multiview_pointcloud(
                            パーセンタイルで埋める（無限遠化を防ぐ）。
       filter_black_bg:     ほぼ黒の背景画素を除去対象にする。
       filter_white_bg:     ほぼ白の背景画素を除去対象にする。
+      anchor_gps:          True で視点位置を実 GPS で固定（上記）。視点1地点や
+                           False のときは従来の DA3 ワールド配置にフォールバック。
       far_clip_m:          原点(=シーン中心)から水平にこの距離より遠い点を除去。
       height_clip_m:       推定地面からこの高さより上（頭上ドーム）を除去。
       max_points:          最終点数の上限（超えたら間引き）。
@@ -317,13 +393,37 @@ def build_multiview_pointcloud(
         else None
     )
 
-    cam_centers = np.zeros((n, 3), dtype=np.float64)
+    # 各ビューの c2w（DA3 ワールド）と視点ごとの平均カメラ中心を先に求める。
+    c2ws = [np.linalg.inv(_as_homogeneous44(ext[i])) for i in range(n)]
+    cam_centers = np.array([c[:3, 3] for c in c2ws], dtype=np.float64)
+    view_index = list(view_index)
+    vp_ids = sorted(set(view_index))
+
+    # GPS アンカーの前計算：DA3 視点配置 → 実 ENU 配置のヨー＋スケール（2D）。
+    anchored = False
+    s2 = 1.0
+    if anchor_gps and len(vp_ids) >= 2:
+        q_vp = np.array(
+            [cam_centers[[i for i in range(n) if view_index[i] == v]].mean(axis=0) for v in vp_ids]
+        )  # (V,3) DA3 ワールドの視点中心
+        p_vp = _viewpoint_enu([viewpoints[v] for v in vp_ids])  # (V,3) ENU メートル
+        # DA3 の水平面は (x,z)（y は重力≒下向き）。ENU 水平 (east,north) への「向き(ヨー)」
+        # だけ Umeyama で採用する。スケールは Umeyama だと視点が近似共線・DA3 ベース
+        # ラインが不整合なとき退化するため使わない。
+        _, R2, _ = _umeyama_2d(q_vp[:, [0, 2]], p_vp[:, [0, 2]])
+        # 幾何スケールは「実距離 / DA3距離」のペア中央値（外れ値に強い）から取る。
+        s2 = _metric_scale(cam_centers, view_index, viewpoints)
+        if s2 is None or not np.isfinite(s2) or s2 <= 0:
+            s2 = 1.0
+        p_by_vp = {v: p_vp[k] for k, v in enumerate(vp_ids)}
+        q_by_vp = {v: q_vp[k] for k, v in enumerate(vp_ids)}
+        anchored = True
+
     all_pts = []
     all_col = []
     for i in range(n):
         progress("mesh", i, n, f"整合点群 生成 {i + 1}/{n}")
-        c2w = np.linalg.inv(_as_homogeneous44(ext[i]))
-        cam_centers[i] = c2w[:3, 3]
+        c2w = c2ws[i]
         z = depth[i][np.ix_(vs, us)].astype(np.float64).ravel()
         valid = np.isfinite(z) & (z > 0)
         if conf_thr is not None:
@@ -338,9 +438,22 @@ def build_multiview_pointcloud(
         zc = z[valid]
         xc = (pix_u[valid] - cx) / fx * zc
         yc = (pix_v[valid] - cy) / fy * zc
-        cam = np.stack([xc, yc, zc], axis=-1)
-        cam_h = np.concatenate([cam, np.ones((cam.shape[0], 1))], axis=1)
-        world = (c2w @ cam_h.T)[:3].T.astype(np.float32)
+        cam = np.stack([xc, yc, zc], axis=-1)  # (M,3) カメラ座標(CV)
+
+        if anchored:
+            v = view_index[i]
+            # DA3 ワールドで「視点中心からの相対位置」に置く（同一視点の各方向は中心共有）。
+            wd = (c2w[:3, :3] @ cam.T).T + (c2w[:3, 3] - q_by_vp[v])  # (M,3)
+            en = (s2 * (R2 @ wd[:, [0, 2]].T)).T  # (M,2) 水平 east,north（相対）
+            east = en[:, 0] + p_by_vp[v][0]
+            north = en[:, 1] + p_by_vp[v][1]
+            up = -s2 * wd[:, 1]  # DA3 は下向き正なので反転して上向きへ
+            # glTF(Y-up): x=east, y=up, z=-north
+            world = np.stack([east, up, -north], axis=-1).astype(np.float32)
+        else:
+            cam_h = np.concatenate([cam, np.ones((cam.shape[0], 1))], axis=1)
+            world = (c2w @ cam_h.T)[:3].T.astype(np.float32)
+
         col = images[i][np.ix_(vs, us)].reshape(-1, 3)[valid].astype(np.uint8)
         all_pts.append(world)
         all_col.append(col)
@@ -351,21 +464,24 @@ def build_multiview_pointcloud(
     pts = np.concatenate(all_pts, axis=0).astype(np.float64)
     col = np.concatenate(all_col, axis=0)
 
-    # glTF 整列（Y-up・中央原点）
-    a = _alignment_transform(ext[0], pts)
-    pts = trimesh.transform_points(pts, a)
-
-    # メートルスケール復元（視点が2地点以上のとき）。なければ DA3 がメートル絶対
-    # 値を返していれば等倍、相対のみならシーン半径15mへ正規化。
-    scale = _metric_scale(cam_centers, view_index, viewpoints)
-    scale_source = "viewpoint_baseline"
-    if scale is None:
-        if is_metric:
-            scale, scale_source = 1.0, "da3_metric"
-        else:
-            radius = float(np.percentile(np.linalg.norm(pts, axis=1), 95)) or 1.0
-            scale, scale_source = 15.0 / radius, "radius_normalized"
-    pts *= scale
+    if anchored:
+        # 既に実 ENU メートル・Y-up。中央原点へ平行移動するだけ。
+        pts -= np.median(pts, axis=0)
+        scale, scale_source = float(s2), "gps_anchored"
+    else:
+        # glTF 整列（Y-up・中央原点）
+        a = _alignment_transform(ext[0], pts)
+        pts = trimesh.transform_points(pts, a)
+        # メートルスケール復元。なければ DA3 がメートル絶対値なら等倍、相対なら半径15mへ。
+        scale = _metric_scale(cam_centers, view_index, viewpoints)
+        scale_source = "viewpoint_baseline"
+        if scale is None:
+            if is_metric:
+                scale, scale_source = 1.0, "da3_metric"
+            else:
+                radius = float(np.percentile(np.linalg.norm(pts, axis=1), 95)) or 1.0
+                scale, scale_source = 15.0 / radius, "radius_normalized"
+        pts *= scale
     pts = pts.astype(np.float32)
 
     # 地面の高さを推定：中心付近(水平半径6m)の点の下位パーセンタイル。
@@ -407,6 +523,7 @@ def build_multiview_pointcloud(
         "vertex_count": int(len(pts)),
         "metric_scale": float(scale),
         "scale_source": scale_source,
+        "gps_anchored": bool(anchored),
         "is_metric": is_metric,
         "ground_y": float(ground_y),
         "point_size": point_size,

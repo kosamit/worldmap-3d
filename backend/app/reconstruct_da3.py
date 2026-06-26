@@ -306,6 +306,73 @@ def _adaptive_conf_thresh(
     return float(min(max(base, lower), upper))
 
 
+def _rotation_between(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """単位ベクトル a を b へ回す 3x3 回転行列（ロドリゲス）。"""
+    a = a / (np.linalg.norm(a) + 1e-12)
+    b = b / (np.linalg.norm(b) + 1e-12)
+    v = np.cross(a, b)
+    c = float(np.dot(a, b))
+    s = float(np.linalg.norm(v))
+    if s < 1e-9:
+        return np.eye(3) if c > 0 else -np.eye(3)
+    vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
+
+
+def _level_ground(verts: np.ndarray) -> tuple[np.ndarray, float | None]:
+    """地面（下部・近傍の点群）に平面を当て、その法線を鉛直(+Y)へ回して傾きを補正。
+
+    DA3 の重力推定誤差で生じるシーン全体の傾きを、幾何から直接直す。既に水平／
+    検出が不確実なときは何もしない（誤って傾けない）。回転後の verts と検出傾き(度)。
+    """
+    if len(verts) < 500:
+        return verts, None
+    horiz = np.linalg.norm(verts[:, [0, 2]], axis=1)
+    yv = verts[:, 1]
+    ylo, yhi = np.percentile(yv, 5), np.percentile(yv, 95)
+    band = ylo + (yhi - ylo) * 0.25
+    near = (yv < band) & (horiz < np.percentile(horiz, 60))
+    if near.sum() < 200:
+        return verts, None
+    P = verts[near].astype(np.float64)
+    c = P.mean(axis=0)
+    _, _, vt = np.linalg.svd(P - c, full_matrices=False)
+    normal = vt[2]  # 最小分散方向 = 平面法線
+    if normal[1] < 0:
+        normal = -normal
+    ang = float(np.degrees(np.arccos(np.clip(normal[1], -1.0, 1.0))))
+    if ang < 1.5 or ang > 35.0:  # 既に水平 / 当てにならない → 触らない
+        return verts, None
+    R = _rotation_between(normal, np.array([0.0, 1.0, 0.0]))
+    return (verts.astype(np.float64) @ R.T).astype(np.float32), ang
+
+
+def _drop_small_components(m: "trimesh.Trimesh", min_faces: int = 250) -> "trimesh.Trimesh":
+    """連結成分のうち小さすぎる断片（浮遊ノイズ）を除去。
+
+    マルチビューでは各ビューのグリッドが互いに非連結なので、しきい値は「総数に対する
+    割合」ではなく絶対面数で持つ（割合だと面数の少ないビューを丸ごと消してしまう）。
+    不連続カットでできた小島だけを落とす。
+    """
+    nf = len(m.faces)
+    if nf < 500:
+        return m
+    try:
+        labels = trimesh.graph.connected_component_labels(m.face_adjacency, node_count=nf)
+    except Exception:
+        return m
+    counts = np.bincount(labels)
+    thr = int(min_faces)
+    keep_labels = np.where(counts >= thr)[0]
+    keep = np.isin(labels, keep_labels)
+    if keep.all() or not keep.any():
+        return m
+    m2 = m.copy()
+    m2.update_faces(keep)
+    m2.remove_unreferenced_vertices()
+    return m2
+
+
 def _decimate_mesh(m: "trimesh.Trimesh", target_faces: int) -> "trimesh.Trimesh":
     """面数が target を超えるメッシュを open3d の二次誤差デシメーションで間引く。
 
@@ -358,7 +425,10 @@ def build_multiview_pointcloud(
     max_points: int = 600000,
     mesh: bool = False,
     discontinuity_ratio: float = 0.08,
+    edge_factor: float = 8.0,
     max_faces: int = 1_200_000,
+    level_ground: bool = True,
+    drop_small: bool = True,
     progress=None,
 ):
     """DA3 マルチビュー予測から、視点間で整合した「点群」(trimesh.Scene)と info を返す。
@@ -460,6 +530,7 @@ def build_multiview_pointcloud(
     all_verts = []   # mesh: 各ビューのグリッド全頂点 / cloud: 有効点のみ
     all_col = []
     all_faces = []   # mesh のみ
+    all_edge = []    # mesh: 各三角形の最長辺（ワールド長, スパイク検出用）
     voff = 0
     for i in range(n):
         progress("mesh", i, n, f"{label} {i + 1}/{n}")
@@ -512,6 +583,15 @@ def build_multiview_pointcloud(
             tri1 = np.stack([tl, bl, tr], axis=1)[keepq]
             tri2 = np.stack([tr, bl, br], axis=1)[keepq]
             all_faces.append(np.concatenate([tri1, tri2], axis=0) + voff)
+            if edge_factor and edge_factor > 0:
+                # 各三角形のワールド最長辺（オクルージョン跨ぎのスパイク検出用）。
+                def _maxedge(t):
+                    p = world[t]  # (M,3,3)
+                    e0 = np.linalg.norm(p[:, 0] - p[:, 1], axis=1)
+                    e1 = np.linalg.norm(p[:, 1] - p[:, 2], axis=1)
+                    e2 = np.linalg.norm(p[:, 2] - p[:, 0], axis=1)
+                    return np.maximum(np.maximum(e0, e1), e2)
+                all_edge.append(np.concatenate([_maxedge(tri1), _maxedge(tri2)]))
             all_verts.append(world.astype(np.float32))
             all_col.append(colg)
             voff += world.shape[0]
@@ -529,6 +609,15 @@ def build_multiview_pointcloud(
         if (mesh and all_faces)
         else np.zeros((0, 3), dtype=np.int64)
     )
+    # スパイク（オクルージョンを跨ぐ引き伸ばし三角形）を最長辺の中央値比で除去。
+    spike_removed = 0
+    if mesh and all_edge and len(faces):
+        edge_len = np.concatenate(all_edge)
+        med = float(np.median(edge_len)) or 1e-9
+        spike = edge_len > med * edge_factor
+        spike_removed = int(spike.sum())
+        if spike.any():
+            faces = faces[~spike]
 
     # 整列・スケールの基準には「面に参照される頂点（mesh）/ 有効点（cloud）」のみ使う。
     ref = np.ones(len(verts), dtype=bool)
@@ -558,6 +647,13 @@ def build_multiview_pointcloud(
         verts *= scale
     verts = verts.astype(np.float32)
 
+    # 地面の傾きを幾何から補正（DA3の重力推定誤差を吸収）。
+    ground_tilt_deg = None
+    if level_ground:
+        verts, ground_tilt_deg = _level_ground(verts)
+        if ground_tilt_deg is not None:
+            verts = (verts - np.median(verts[ref], axis=0)).astype(np.float32)
+
     # 地面の高さを推定：中心付近(水平半径6m)の点の下位パーセンタイル。
     rv = verts[ref]
     horiz_r = np.linalg.norm(rv[:, [0, 2]], axis=1)
@@ -586,6 +682,11 @@ def build_multiview_pointcloud(
             vertices=verts, faces=faces, vertex_colors=rgba, process=False
         )
         m.remove_unreferenced_vertices()
+        if drop_small:
+            before = len(m.faces)
+            m = _drop_small_components(m)
+            if len(m.faces) < before:
+                progress("mesh", n, n, f"浮遊片を除去（{before}→{len(m.faces)}面）")
         if max_faces and len(m.faces) > max_faces:
             progress("mesh", n, n, f"メッシュ簡略化中（{len(m.faces)}→約{max_faces}面）...")
             m = _decimate_mesh(m, max_faces)
@@ -624,6 +725,8 @@ def build_multiview_pointcloud(
         "scale_source": scale_source,
         "gps_anchored": bool(anchored),
         "is_metric": is_metric,
+        "ground_tilt_corrected_deg": (None if ground_tilt_deg is None else round(ground_tilt_deg, 1)),
+        "spike_faces_removed": int(spike_removed),
         "ground_y": float(ground_y),
         "point_size": point_size,
         "conf_percentile": float(conf_percentile),

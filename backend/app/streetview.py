@@ -11,7 +11,9 @@ import requests
 from PIL import Image
 
 STREETVIEW_URL = "https://maps.googleapis.com/maps/api/streetview"
+METADATA_URL = "https://maps.googleapis.com/maps/api/streetview/metadata"
 DEFAULT_SIZE = "640x640"
+DEFAULT_SNAP_RADIUS_M = 50
 
 
 def fetch_streetview(
@@ -76,3 +78,50 @@ def fetch_streetview_panorama(
         )
         results.append((image, heading))
     return results
+
+
+def fetch_streetview_metadata(
+    lat: float,
+    lng: float,
+    radius: int = DEFAULT_SNAP_RADIUS_M,
+    api_key: str | None = None,
+) -> dict | None:
+    """指定座標の近傍にあるパノラマへスナップする。
+
+    実在するパノラマが見つかれば {"lat", "lng", "pano_id", "date"} を返す。
+    無ければ None。メタデータ API は課金されない（実画像取得前のスナップに最適）。
+    失敗時は ValueError。
+    """
+    api_key = api_key or os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "Google Maps API キーが必要です (環境変数 GOOGLE_MAPS_API_KEY か api_key 引数)"
+        )
+
+    params = {
+        "location": f"{lat},{lng}",
+        "radius": radius,
+        "key": api_key,
+    }
+    resp = requests.get(METADATA_URL, params=params, timeout=20)
+    if resp.status_code != 200:
+        raise ValueError(f"Street View metadata API エラー {resp.status_code}")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise ValueError(f"Street View metadata の JSON 解析に失敗: {exc}") from exc
+
+    status = data.get("status")
+    if status == "ZERO_RESULTS" or status == "NOT_FOUND":
+        return None
+    if status != "OK":
+        raise ValueError(f"Street View metadata ステータス異常: {status}")
+
+    location = data.get("location") or {}
+    return {
+        "lat": float(location["lat"]),
+        "lng": float(location["lng"]),
+        "pano_id": data.get("pano_id"),
+        "date": data.get("date"),
+    }

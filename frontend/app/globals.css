@@ -1,0 +1,236 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #101418;
+  color: #e6e9ed;
+  font-family:
+    system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP",
+    sans-serif;
+}
+
+.layout {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ---- 左パネル ---- */
+.panel {
+  width: 340px;
+  flex: 0 0 340px;
+  height: 100%;
+  overflow-y: auto;
+  background: #1a1f26;
+  padding: 16px;
+}
+
+.panel h1 {
+  font-size: 1.3rem;
+  margin: 0 0 12px;
+}
+
+.panel h2 {
+  font-size: 0.95rem;
+  margin: 0 0 8px;
+  color: #9fb3c8;
+}
+
+.panel section {
+  margin-top: 18px;
+  border-top: 1px solid #2c333d;
+  padding-top: 12px;
+}
+
+.sectionHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.panel input,
+.panel button {
+  font-size: 0.85rem;
+  border-radius: 6px;
+  border: 1px solid #3a434f;
+  background: #11151b;
+  color: #e6e9ed;
+  padding: 6px 8px;
+}
+
+.panel button {
+  background: #2f6fed;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.panel button:hover {
+  background: #4480ff;
+}
+
+.panel button:disabled {
+  background: #3a434f;
+  cursor: not-allowed;
+}
+
+.panel button.ghost {
+  background: #2c333d;
+}
+
+.panel button.ghost:hover {
+  background: #3a434f;
+}
+
+.field {
+  display: block;
+  font-size: 0.8rem;
+  color: #9fb3c8;
+}
+
+.field input {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #9fb3c8;
+}
+
+.inline input {
+  width: 90px;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.grid2.row2 button {
+  width: 100%;
+}
+
+/* ---- 地図 ---- */
+.map {
+  width: 100%;
+  height: 260px;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 6px 0 4px;
+  background: #11151b;
+}
+
+.mapPlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #66707c;
+  font-size: 0.8rem;
+}
+
+/* ---- シーン一覧 ---- */
+.sceneList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.sceneList li {
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+}
+
+.sceneList li:hover {
+  background: #263040;
+}
+
+.sceneList li.empty {
+  color: #66707c;
+  cursor: default;
+}
+
+.hint {
+  font-size: 0.72rem;
+  color: #66707c;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.status {
+  margin-top: 18px;
+  font-size: 0.82rem;
+  color: #9fe6a0;
+  word-break: break-word;
+}
+
+.status.error {
+  color: #ff6b6b;
+}
+
+/* ---- 3D ビュー ---- */
+.main {
+  flex: 1 1 auto;
+  height: 100%;
+  position: relative;
+}
+
+.canvasWrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.canvasWrap canvas {
+  display: block;
+}
+
+.blocker {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 11, 15, 0.45);
+  pointer-events: none;
+  text-align: center;
+}
+
+.instructions .big {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.hud {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: #9fe6a0;
+  background: rgba(8, 11, 15, 0.5);
+  padding: 4px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+}

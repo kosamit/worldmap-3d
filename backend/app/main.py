@@ -2,14 +2,19 @@
 
 エンドポイント:
 - GET  /api/health                     稼働確認と推論デバイス
+- GET  /api/config                     フロント用の公開設定 (Maps JS キー等)
 - POST /api/reconstruct                画像アップロード → 3D 化
 - POST /api/reconstruct/streetview     緯度経度 → Street View 取得 → 3D 化
+- POST /api/reconstruct/panorama       1 地点を 360° 撮影 → 3D 化
+- POST /api/reconstruct/route          地図で選んだ道沿いの点列 → 連結 3D 化
 - GET  /api/scenes                     蓄積済みシーン一覧
 - GET  /scenes/<id>/scene.glb          生成済み glb (静的配信)
 """
 
 import datetime
 import io
+import json
+import os
 import threading
 
 from dotenv import load_dotenv
@@ -25,6 +30,12 @@ from . import storage
 from .depth import _select_device, active_backend, estimate_depth
 from .panorama import build_panorama
 from .reconstruct import DEFAULT_FOV_DEG, reconstruct_mesh
+from .route import (
+    MAX_ROUTE_POINTS,
+    build_route_scene,
+    fetch_route_panoramas,
+    snap_route_points,
+)
 from .streetview import fetch_streetview, fetch_streetview_panorama
 
 MAX_PANORAMA_VIEWS = 16
@@ -75,6 +86,20 @@ def health():
         "status": "ok",
         "device": _select_device(),
         "backend": active_backend(),
+    }
+
+
+@app.get("/api/config")
+def config():
+    """フロントが地図を描画するための公開設定を返す。
+
+    Maps JavaScript API キーはブラウザに露出する前提（HTTP リファラ制限で保護する）。
+    """
+    maps_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    return {
+        "maps_api_key": maps_key,
+        "has_maps_key": bool(maps_key),
+        "max_route_points": MAX_ROUTE_POINTS,
     }
 
 
@@ -157,6 +182,76 @@ def reconstruct_panorama(
         return meta
     except Exception as exc:  # noqa: BLE001 - 500 を HTTPException 化して CORS ヘッダを維持
         raise HTTPException(status_code=500, detail=f"パノラマ3D生成に失敗しました: {exc}")
+
+
+@app.post("/api/reconstruct/route")
+def reconstruct_route(
+    points: str = Form(...),
+    num_views: int = Form(6),
+    pitch: float = Form(0.0),
+    fov: float = Form(90.0),
+    api_key: str | None = Form(None),
+):
+    """地図で選んだ道沿いの点列を、歩いてつながる 1 つの 3D 空間へ合成する。
+
+    points は [{"lat":.., "lng":..}, ...] の JSON 文字列。各点を実在パノラマへ
+    スナップ・重複除去し、最初の点を原点とした実距離オフセットで連結する。
+    """
+    try:
+        raw = json.loads(points)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"points が不正な JSON です: {exc}")
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(status_code=400, detail="points は 1 点以上の配列が必要です")
+
+    try:
+        coords = [(float(p["lat"]), float(p["lng"])) for p in raw]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"各点は lat/lng を持つ必要があります: {exc}"
+        )
+    coords = coords[:MAX_ROUTE_POINTS]
+    num_views = max(2, min(MAX_PANORAMA_VIEWS, num_views))
+
+    # ネットワーク処理（スナップ・画像取得）はロックの外で行う。
+    try:
+        snapped = snap_route_points(coords, api_key=api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not snapped:
+        raise HTTPException(
+            status_code=404,
+            detail="選択した道沿いに Street View が見つかりませんでした",
+        )
+    try:
+        panoramas = fetch_route_panoramas(
+            snapped, num_views=num_views, pitch=pitch, fov=fov, api_key=api_key
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        with _infer_lock:
+            scene, info = build_route_scene(
+                panoramas, snapped, fov=fov, max_width=PANORAMA_MAX_WIDTH
+            )
+        sid = storage.new_scene_id()
+        meta = {
+            "id": sid,
+            "source": "streetview_route",
+            "created_at": _now_iso(),
+            "location": {
+                **info["origin"],
+                "points": info["points"],
+                "num_views": num_views,
+            },
+            **info,
+        }
+        storage.save_scene(scene, meta)
+        meta["glb_url"] = f"/scenes/{sid}/scene.glb"
+        return meta
+    except Exception as exc:  # noqa: BLE001 - 500 を HTTPException 化して CORS ヘッダを維持
+        raise HTTPException(status_code=500, detail=f"ルート3D生成に失敗しました: {exc}")
 
 
 @app.get("/api/scenes")

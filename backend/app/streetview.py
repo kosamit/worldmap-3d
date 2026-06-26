@@ -5,6 +5,7 @@ API キーは環境変数 GOOGLE_MAPS_API_KEY、または呼び出し時の引�
 """
 
 import io
+import math
 import os
 
 import requests
@@ -87,6 +88,115 @@ def fetch_streetview_panorama(
     return results
 
 
+def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """2 点間の概算距離 (m)。視点間ベースラインの実測に使う。"""
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _offset_latlng(lat: float, lng: float, north_m: float, east_m: float):
+    dlat = north_m / 111320.0
+    dlng = east_m / (111320.0 * math.cos(math.radians(lat)))
+    return lat + dlat, lng + dlng
+
+
+def _is_user_photosphere(meta: dict) -> bool:
+    """ユーザー投稿のフォトスフィア（屋内外バラバラで整合しない）を判定。
+
+    公式 Street View は copyright が "© Google"、pano_id は短い。ユーザー投稿は
+    copyright が個人名で pano_id が "CAoSF..." 形式。これらは混ぜると壊れる。
+    """
+    cr = (meta.get("copyright") or "")
+    pid = meta.get("pano_id") or ""
+    return ("Google" not in cr) or pid.startswith("CAoSF")
+
+
+def gather_nearby_viewpoints(
+    lat: float,
+    lng: float,
+    radius_m: float = 12.0,
+    max_views: int = 5,
+    api_key: str | None = None,
+    consistent: bool = True,
+) -> list[dict]:
+    """中心とその周囲オフセットを実在パノラマにスナップし、重複除去して返す。
+
+    マルチビュー再構成に必要な「ベースライン（視差）」を作るため、中心の前後左右を
+    少しずらしてスナップし、別地点のパノラマを集める。返り値は中心を先頭にした
+    [{"pano_id", "lat", "lng", "date", "copyright"}] のリスト（最大 max_views 件）。
+
+    consistent=True（既定）: 中心と「同一ソース（copyright）かつ同一撮影日（date）」の
+    公式パノラマだけを集める。屋内駅にユーザー投稿フォトスフィアや別日の屋外パノラマが
+    混ざって「壁・天井が消える／ぐちゃぐちゃ」になるのを防ぐ。条件を満たすものが無ければ
+    中心1地点だけ（=きれいな単一視点）になる。
+    """
+    seeds = [(0.0, 0.0), (radius_m, 0.0), (-radius_m, 0.0), (0.0, radius_m), (0.0, -radius_m)]
+    out: list[dict] = []
+    seen: set[str] = set()
+    ref_copyright: str | None = None
+    ref_date: str | None = None
+    for north_m, east_m in seeds:
+        plat, plng = _offset_latlng(lat, lng, north_m, east_m)
+        try:
+            meta = fetch_streetview_metadata(plat, plng, api_key=api_key)
+        except ValueError:
+            continue
+        if not meta or not meta.get("pano_id"):
+            continue
+        pid = meta["pano_id"]
+        if pid in seen:
+            continue
+        is_center = not out
+        if consistent:
+            if is_center:
+                ref_copyright = meta.get("copyright")
+                ref_date = meta.get("date")
+            else:
+                # ユーザー投稿や、中心と別ソース/別撮影日のパノラマは混ぜない。
+                if _is_user_photosphere(meta):
+                    continue
+                if meta.get("copyright") != ref_copyright or meta.get("date") != ref_date:
+                    continue
+        seen.add(pid)
+        out.append({
+            "pano_id": pid, "lat": meta["lat"], "lng": meta["lng"],
+            "date": meta.get("date"), "copyright": meta.get("copyright"),
+        })
+        if len(out) >= max_views:
+            break
+    return out
+
+
+def sample_viewpoint_images(
+    viewpoints: list[dict],
+    headings: list[float],
+    pitch: float = 0.0,
+    fov: float = 90.0,
+    size: str = DEFAULT_SIZE,
+    api_key: str | None = None,
+) -> tuple[list[Image.Image], list[int]]:
+    """各視点パノラマから heading ぶん透視画像を取得する。
+
+    (images, view_index) を返す。view_index[i] は images[i] がどの視点(viewpoints の
+    インデックス)由来かを示す。隣接 heading が重なるよう fov を広めに使うこと。
+    """
+    images: list[Image.Image] = []
+    view_index: list[int] = []
+    for vi, vp in enumerate(viewpoints):
+        for h in headings:
+            image, _ = fetch_streetview(
+                vp["lat"], vp["lng"], heading=h, pitch=pitch, fov=fov,
+                size=size, api_key=api_key, pano=vp.get("pano_id"),
+            )
+            images.append(image)
+            view_index.append(vi)
+    return images, view_index
+
+
 def fetch_streetview_metadata(
     lat: float,
     lng: float,
@@ -131,6 +241,7 @@ def fetch_streetview_metadata(
         "lng": float(location["lng"]),
         "pano_id": data.get("pano_id"),
         "date": data.get("date"),
+        "copyright": data.get("copyright"),
     }
 
 

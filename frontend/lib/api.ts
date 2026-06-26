@@ -21,6 +21,7 @@ export interface ReconstructDefaults {
 export interface MultiviewDefaults {
   max_views: number;
   heading_count: number;
+  pitch_count: number;
   radius_m: number;
   fov: number;
   max_width: number;
@@ -247,6 +248,7 @@ export interface MultiviewParams {
   lng: number;
   maxViews?: number;
   headingCount?: number;
+  pitchCount?: number;
   radiusM?: number;
   fov?: number;
   maxWidth?: number;
@@ -281,6 +283,8 @@ export async function reconstructMultiview(
   if (params.maxViews != null) form.append("max_views", String(params.maxViews));
   if (params.headingCount != null)
     form.append("heading_count", String(params.headingCount));
+  if (params.pitchCount != null)
+    form.append("pitch_count", String(params.pitchCount));
   if (params.radiusM != null) form.append("radius_m", String(params.radiusM));
   if (params.fov != null) form.append("fov", String(params.fov));
   if (params.maxWidth != null) form.append("max_width", String(params.maxWidth));

@@ -199,18 +199,19 @@ def config():
             {"id": "depth-anything/DA3-GIANT", "label": "DA3 Giant（最高品質・重い）"},
         ],
         "multiview_defaults": {
-            "max_views": 4,
-            "heading_count": 6,
+            "max_views": 1,
+            "heading_count": 8,
+            "pitch_count": 3,
             "radius_m": 12.0,
             "fov": 90.0,
-            "max_width": 400,
+            "max_width": 256,
             "conf_percentile": 40.0,
             "ensure_percentile": 90.0,
             "far_clip_m": 35.0,
             "height_clip_m": 9.0,
             "process_res": 504,
             "process_res_method": "upper_bound_resize",
-            "use_ray_pose": False,
+            "use_ray_pose": True,
             "ref_view_strategy": "saddle_balanced",
             "drop_sky": True,
             "filter_black_bg": False,
@@ -393,6 +394,24 @@ def reconstruct_progress(job_id: str):
         return dict(job)
 
 
+def _pitch_rows(pitch_count: int) -> list[float]:
+    """上下(ピッチ)方向のサンプル角リストを返す。fov≈90 を前提に天地を覆う。
+
+    1 → 水平のみ / 3 → 下・水平・上 / 5 → さらに細かく。これで全周（水平だけでなく
+    足元〜頭上）を覆い、上下の抜けを埋める。
+    """
+    # 先頭は必ず水平(0)。先頭画像が基準カメラ(ext[0])になり、その向きで地面の
+    # 水平＝重力方向が決まるため、ここを水平にしないとシーン全体が傾く。
+    presets = {
+        1: [0.0],
+        2: [0.0, -40.0],
+        3: [0.0, -45.0, 45.0],
+        4: [0.0, -45.0, 45.0, -75.0],
+        5: [0.0, -30.0, 30.0, -60.0, 60.0],
+    }
+    return presets.get(int(pitch_count), [0.0, -45.0, 45.0])
+
+
 def _run_multiview_job(jid, lat, lng, params, api_key):
     """DA3 マルチビューで整合メッシュを作るジョブ本体（別スレッド）。"""
     progress = _job_progress(jid)
@@ -409,22 +428,24 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
             raise ValueError("この付近に Street View が見つかりませんでした")
         hc = params["heading_count"]
         headings = [i * 360.0 / hc for i in range(hc)]
-        total_imgs = len(viewpoints) * hc
+        pitches = _pitch_rows(params["pitch_count"])  # 上下方向の段（天地を埋める）
+        total_imgs = len(viewpoints) * hc * len(pitches)
         images = []
         view_index = []
         for vi, vp in enumerate(viewpoints):
             for h in headings:
-                done = len(images)
-                progress("street_view", done, total_imgs,
-                         f"Street View 取得 {done + 1}/{total_imgs}（{len(viewpoints)}地点）")
-                image, _ = fetch_streetview(
-                    vp["lat"], vp["lng"], heading=h, pitch=params["pitch"],
-                    fov=params["fov"], api_key=api_key, pano=vp.get("pano_id"),
-                )
-                images.append(image)
-                view_index.append(vi)
+                for p in pitches:
+                    done = len(images)
+                    progress("street_view", done, total_imgs,
+                             f"Street View 取得 {done + 1}/{total_imgs}（{len(viewpoints)}地点）")
+                    image, _ = fetch_streetview(
+                        vp["lat"], vp["lng"], heading=h, pitch=p,
+                        fov=params["fov"], api_key=api_key, pano=vp.get("pano_id"),
+                    )
+                    images.append(image)
+                    view_index.append(vi)
         progress("street_view", total_imgs, total_imgs,
-                 f"{len(viewpoints)}地点×{hc}方向 を取得")
+                 f"{len(viewpoints)}地点×{hc}方向×{len(pitches)}段 を取得")
 
         # 2. DA3 マルチビュー推論（フェーズ: depth）。推論は直列化。
         with _infer_lock:
@@ -442,7 +463,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                      "深度＋カメラポーズ推定 完了"
                      + ("（レイベース）" if params["use_ray_pose"] else ""))
 
-            # 3. 整合点群の構築（フェーズ: mesh）。DA3 公式と同じく面は張らない。
+            # 3. 整合メッシュの構築（フェーズ: mesh）。GPSアンカー配置で面を張る。
             scene, info = build_multiview_pointcloud(
                 pred, view_index, viewpoints,
                 max_width=params["max_width"],
@@ -454,6 +475,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                 anchor_gps=params["anchor_gps"],
                 far_clip_m=params["far_clip_m"],
                 height_clip_m=params["height_clip_m"],
+                mesh=True,
                 progress=progress,
             )
 
@@ -494,19 +516,20 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
 def reconstruct_multiview(
     lat: float = Form(...),
     lng: float = Form(...),
-    max_views: int = Form(4),
-    heading_count: int = Form(6),
+    max_views: int = Form(1),
+    heading_count: int = Form(8),
     radius_m: float = Form(12.0),
     pitch: float = Form(0.0),
+    pitch_count: int = Form(3),
     fov: float = Form(90.0),
-    max_width: int = Form(400),
+    max_width: int = Form(256),
     conf_percentile: float = Form(40.0),
     ensure_percentile: float = Form(90.0),
     far_clip_m: float = Form(35.0),
     height_clip_m: float = Form(9.0),
     process_res: int = Form(504),
     process_res_method: str = Form("upper_bound_resize"),
-    use_ray_pose: bool = Form(False),
+    use_ray_pose: bool = Form(True),
     ref_view_strategy: str = Form("saddle_balanced"),
     drop_sky: bool = Form(True),
     filter_black_bg: bool = Form(False),
@@ -526,6 +549,7 @@ def reconstruct_multiview(
         "heading_count": max(2, min(8, heading_count)),
         "radius_m": max(3.0, min(40.0, float(radius_m))),
         "pitch": float(pitch),
+        "pitch_count": max(1, min(5, int(pitch_count))),
         "fov": max(60.0, min(120.0, float(fov))),
         "max_width": int(max(64, min(504, max_width))),
         "conf_percentile": max(0.0, min(95.0, float(conf_percentile))),

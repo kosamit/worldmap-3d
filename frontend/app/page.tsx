@@ -52,6 +52,7 @@ interface MultiParams {
   depthModel: string;
   maxViews: number;
   headingCount: number;
+  pitchCount: number;
   radiusM: number;
   confPercentile: number;
   ensurePercentile: number;
@@ -69,8 +70,9 @@ interface MultiParams {
 
 const FALLBACK_MULTI: MultiParams = {
   depthModel: "",
-  maxViews: 4,
-  headingCount: 4,
+  maxViews: 1,
+  headingCount: 8,
+  pitchCount: 3,
   radiusM: 12,
   confPercentile: 40,
   ensurePercentile: 90,
@@ -78,13 +80,45 @@ const FALLBACK_MULTI: MultiParams = {
   heightClipM: 9,
   processRes: 504,
   processResMethod: "upper_bound_resize",
-  useRayPose: false,
+  useRayPose: true,
   refViewStrategy: "saddle_balanced",
   dropSky: true,
   filterBlackBg: false,
   filterWhiteBg: false,
   anchorGps: true,
 };
+
+// 現在地(lat,lng,向き)を URL に載せ、Google Maps のように共有・ブックマーク可能にする。
+function parseLocationFromUrl():
+  | { lat: number; lng: number; heading: number | null }
+  | null {
+  if (typeof window === "undefined") return null;
+  const sp = new URLSearchParams(window.location.search);
+  const lat = Number(sp.get("lat"));
+  const lng = Number(sp.get("lng"));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  const hRaw = sp.get("h") ?? sp.get("heading");
+  const h = hRaw == null ? NaN : Number(hRaw);
+  return { lat, lng, heading: Number.isFinite(h) ? h : null };
+}
+
+function writeLocationToUrl(
+  lat: number,
+  lng: number,
+  heading: number | null,
+): void {
+  if (typeof window === "undefined") return;
+  const sp = new URLSearchParams(window.location.search);
+  sp.set("lat", lat.toFixed(6));
+  sp.set("lng", lng.toFixed(6));
+  if (heading != null && Number.isFinite(heading)) {
+    sp.set("h", String(((Math.round(heading) % 360) + 360) % 360));
+  }
+  const url = `${window.location.pathname}?${sp.toString()}${window.location.hash}`;
+  // replaceState: 見回しのたびに履歴を積まずに URL だけ更新する。
+  window.history.replaceState(null, "", url);
+}
 
 export default function Home() {
   const [backend, setBackend] = useState(DEFAULT_BACKEND);
@@ -151,6 +185,7 @@ export default function Home() {
             depthModel: cfg.multiview_default_model ?? "",
             maxViews: m?.max_views ?? FALLBACK_MULTI.maxViews,
             headingCount: m?.heading_count ?? FALLBACK_MULTI.headingCount,
+            pitchCount: m?.pitch_count ?? FALLBACK_MULTI.pitchCount,
             radiusM: m?.radius_m ?? FALLBACK_MULTI.radiusM,
             confPercentile: m?.conf_percentile ?? FALLBACK_MULTI.confPercentile,
             ensurePercentile: m?.ensure_percentile ?? FALLBACK_MULTI.ensurePercentile,
@@ -178,10 +213,13 @@ export default function Home() {
     };
   }, [backend, say]);
 
+  const [mapsReady, setMapsReady] = useState(false);
+  const urlInitDone = useRef(false);
   const onMapsReady = useCallback(() => {
     if (!svcRef.current && window.google?.maps) {
       svcRef.current = new window.google.maps.StreetViewService();
     }
+    setMapsReady(true);
   }, []);
 
   // 指定パノラマ(または座標)を表示する。faces を取得して current を更新。
@@ -277,6 +315,30 @@ export default function Home() {
     });
   }, []);
 
+  // 初回: URL に座標があればそこへ降り立つ（共有リンク・リロード復元）。
+  useEffect(() => {
+    if (!mapsReady || urlInitDone.current) return;
+    urlInitDone.current = true;
+    const loc = parseLocationFromUrl();
+    if (!loc) return;
+    if (loc.heading != null) {
+      facingRef.current = loc.heading;
+      setFacingDeg(Math.round(loc.heading));
+    }
+    setHistory([]);
+    showPano({
+      location: { lat: loc.lat, lng: loc.lng },
+      radius: 100,
+      source: window.google.maps.StreetViewSource.OUTDOOR,
+    });
+  }, [mapsReady, showPano]);
+
+  // 現在地・向きを URL に反映（履歴を汚さない replaceState）。
+  useEffect(() => {
+    if (!current) return;
+    writeLocationToUrl(current.lat, current.lng, facingDeg);
+  }, [current, facingDeg]);
+
   // 今いる地点を深度推定で立体メッシュ化し、歩ける3Dモデルに切り替える。
   const handle3D = useCallback(async () => {
     if (!current) {
@@ -343,6 +405,7 @@ export default function Home() {
           lng: current.lng,
           maxViews: multi.maxViews,
           headingCount: multi.headingCount,
+          pitchCount: multi.pitchCount,
           radiusM: multi.radiusM,
           confPercentile: multi.confPercentile,
           ensurePercentile: multi.ensurePercentile,
@@ -606,6 +669,20 @@ export default function Home() {
                       />
                     </label>
                     <label className="field">
+                      上下の段数 (1–5)
+                      <input
+                        type="number"
+                        min={1}
+                        max={5}
+                        step={1}
+                        value={multi.pitchCount}
+                        onChange={(e) =>
+                          setMultiParam("pitchCount", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
                       収集半径 (m)
                       <input
                         type="number"
@@ -780,11 +857,12 @@ export default function Home() {
                     </label>
                   </div>
                   <p className="hint">
-                    地点数×方向数 の画像をDA3に一括投入して整合。<b>視点位置をGPSで固定</b>は
-                    DA3が圧縮しがちな視点間距離を実GPS座標で上書きし、複数視点を重ねたときの
-                    「ぐちゃぐちゃ」を防ぐ最重要オプションです。<b>レイベースのポーズ推定</b>は
-                    各画素レイから RANSAC でカメラを解く別法。信頼度カット（下限）と上限クランプ
-                    の間で適応しきい値が決まります。空・遠景は遠方/頭上クリップで除去します。
+                    地点数×方向数×上下段数 の画像をDA3に一括投入して整合。<b>地点数=1</b>なら
+                    今いる1地点の全周だけで作ります（最もキレイ）。<b>上下の段数</b>は天地の抜けを
+                    埋めるピッチ方向の枚数（3=下/水平/上）。<b>収集半径</b>は地点数≥2のときだけ効きます。
+                    <b>視点位置をGPSで固定</b>は複数視点時のズレ（ぐちゃぐちゃ）を防ぐ最重要オプション。
+                    <b>レイベースのポーズ推定</b>は各画素レイから RANSAC でカメラを解く別法。
+                    空・遠景は遠方/頭上クリップで除去します。
                   </p>
                 </>
               )}

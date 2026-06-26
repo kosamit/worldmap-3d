@@ -306,6 +306,40 @@ def _adaptive_conf_thresh(
     return float(min(max(base, lower), upper))
 
 
+def _decimate_mesh(m: "trimesh.Trimesh", target_faces: int) -> "trimesh.Trimesh":
+    """面数が target を超えるメッシュを open3d の二次誤差デシメーションで間引く。
+
+    頂点色は補間して保持。open3d が無い/失敗した場合は元メッシュをそのまま返す
+    （ベストエフォート。重い GLB を避けるための安全弁）。
+    """
+    if len(m.faces) <= target_faces:
+        return m
+    try:
+        import open3d as o3d
+    except Exception:
+        return m
+    om = o3d.geometry.TriangleMesh()
+    om.vertices = o3d.utility.Vector3dVector(np.asarray(m.vertices, dtype=np.float64))
+    om.triangles = o3d.utility.Vector3iVector(np.asarray(m.faces, dtype=np.int32))
+    has_color = getattr(m.visual, "kind", None) == "vertex"
+    if has_color:
+        vc = np.asarray(m.visual.vertex_colors)[:, :3].astype(np.float64) / 255.0
+        om.vertex_colors = o3d.utility.Vector3dVector(vc)
+    try:
+        om = om.simplify_quadric_decimation(int(target_faces))
+    except Exception:
+        return m
+    v2 = np.asarray(om.vertices, dtype=np.float32)
+    f2 = np.asarray(om.triangles, dtype=np.int64)
+    if len(f2) == 0:
+        return m
+    rgba = None
+    if has_color and len(om.vertex_colors) == len(v2):
+        c2 = (np.asarray(om.vertex_colors) * 255).clip(0, 255).astype(np.uint8)
+        rgba = np.concatenate([c2, np.full((len(c2), 1), 255, np.uint8)], axis=1)
+    return trimesh.Trimesh(vertices=v2, faces=f2, vertex_colors=rgba, process=False)
+
+
 def build_multiview_pointcloud(
     prediction: dict,
     view_index: list[int],
@@ -322,6 +356,9 @@ def build_multiview_pointcloud(
     far_clip_m: float = 35.0,
     height_clip_m: float = 9.0,
     max_points: int = 600000,
+    mesh: bool = False,
+    discontinuity_ratio: float = 0.08,
+    max_faces: int = 1_200_000,
     progress=None,
 ):
     """DA3 マルチビュー予測から、視点間で整合した「点群」(trimesh.Scene)と info を返す。
@@ -419,59 +456,96 @@ def build_multiview_pointcloud(
         q_by_vp = {v: q_vp[k] for k, v in enumerate(vp_ids)}
         anchored = True
 
-    all_pts = []
+    label = "整合メッシュ生成" if mesh else "整合点群 生成"
+    all_verts = []   # mesh: 各ビューのグリッド全頂点 / cloud: 有効点のみ
     all_col = []
+    all_faces = []   # mesh のみ
+    voff = 0
     for i in range(n):
-        progress("mesh", i, n, f"整合点群 生成 {i + 1}/{n}")
+        progress("mesh", i, n, f"{label} {i + 1}/{n}")
         c2w = c2ws[i]
-        z = depth[i][np.ix_(vs, us)].astype(np.float64).ravel()
-        valid = np.isfinite(z) & (z > 0)
+        zg = depth[i][np.ix_(vs, us)].astype(np.float64)  # (h2,w2)
+        validg = np.isfinite(zg) & (zg > 0)
         if conf_thr is not None:
-            valid &= conf[i][np.ix_(vs, us)].ravel() >= conf_thr
+            validg &= conf[i][np.ix_(vs, us)] >= conf_thr
         if sky is not None and drop_sky:
-            valid &= ~sky[i][np.ix_(vs, us)].ravel()
-        valid &= ~bg_drop[i][np.ix_(vs, us)].ravel()
-        if not valid.any():
+            validg &= ~sky[i][np.ix_(vs, us)]
+        validg &= ~bg_drop[i][np.ix_(vs, us)]
+        if not validg.any():
             continue
         fx, fy = K[i][0, 0], K[i][1, 1]
         cx, cy = K[i][0, 2], K[i][1, 2]
-        zc = z[valid]
-        xc = (pix_u[valid] - cx) / fx * zc
-        yc = (pix_v[valid] - cy) / fy * zc
-        cam = np.stack([xc, yc, zc], axis=-1)  # (M,3) カメラ座標(CV)
+        # 無効/非正の深度は座標計算用に有限の正値へ（mesh で nan を避ける。面では参照しない）。
+        z_calc = np.where(validg, zg, 1.0).ravel()
+        xc = (pix_u - cx) / fx * z_calc
+        yc = (pix_v - cy) / fy * z_calc
+        cam = np.stack([xc, yc, z_calc], axis=-1)  # (h2*w2,3) グリッド全点（CV）
 
         if anchored:
             v = view_index[i]
             # DA3 ワールドで「視点中心からの相対位置」に置く（同一視点の各方向は中心共有）。
-            wd = (c2w[:3, :3] @ cam.T).T + (c2w[:3, 3] - q_by_vp[v])  # (M,3)
-            en = (s2 * (R2 @ wd[:, [0, 2]].T)).T  # (M,2) 水平 east,north（相対）
+            wd = (c2w[:3, :3] @ cam.T).T + (c2w[:3, 3] - q_by_vp[v])
+            en = (s2 * (R2 @ wd[:, [0, 2]].T)).T
             east = en[:, 0] + p_by_vp[v][0]
             north = en[:, 1] + p_by_vp[v][1]
             up = -s2 * wd[:, 1]  # DA3 は下向き正なので反転して上向きへ
-            # glTF(Y-up): x=east, y=up, z=-north
-            world = np.stack([east, up, -north], axis=-1).astype(np.float32)
+            world = np.stack([east, up, -north], axis=-1)  # glTF(Y-up): x=east,y=up,z=-north
         else:
             cam_h = np.concatenate([cam, np.ones((cam.shape[0], 1))], axis=1)
-            world = (c2w @ cam_h.T)[:3].T.astype(np.float32)
+            world = (c2w @ cam_h.T)[:3].T
 
-        col = images[i][np.ix_(vs, us)].reshape(-1, 3)[valid].astype(np.uint8)
-        all_pts.append(world)
-        all_col.append(col)
+        colg = images[i][np.ix_(vs, us)].reshape(-1, 3).astype(np.uint8)
+        vflat = validg.ravel()
 
-    progress("mesh", n, n, "整合点群 生成 完了")
-    if not all_pts:
+        if mesh:
+            h2, w2 = zg.shape
+            idx = np.arange(h2 * w2).reshape(h2, w2)
+            tl = idx[:-1, :-1].ravel(); tr = idx[:-1, 1:].ravel()
+            bl = idx[1:, :-1].ravel(); br = idx[1:, 1:].ravel()
+            quad_valid = vflat[tl] & vflat[tr] & vflat[bl] & vflat[br]
+            zr = zg.ravel()
+            zq = np.stack([zr[tl], zr[tr], zr[bl], zr[br]], axis=1)
+            zmean = zq.mean(axis=1) + 1e-9
+            # 相対深度なので「平均深度に対する比」で不連続を判定（スケール非依存）。
+            cont = (zq.max(axis=1) - zq.min(axis=1)) / zmean < discontinuity_ratio
+            keepq = quad_valid & cont
+            tri1 = np.stack([tl, bl, tr], axis=1)[keepq]
+            tri2 = np.stack([tr, bl, br], axis=1)[keepq]
+            all_faces.append(np.concatenate([tri1, tri2], axis=0) + voff)
+            all_verts.append(world.astype(np.float32))
+            all_col.append(colg)
+            voff += world.shape[0]
+        else:
+            all_verts.append(world[vflat].astype(np.float32))
+            all_col.append(colg[vflat])
+
+    progress("mesh", n, n, f"{label} 完了")
+    if not all_verts:
         raise ValueError("有効な点が残りませんでした（信頼度しきい値や空マスクが厳しすぎます）")
-    pts = np.concatenate(all_pts, axis=0).astype(np.float64)
+    verts = np.concatenate(all_verts, axis=0).astype(np.float64)
     col = np.concatenate(all_col, axis=0)
+    faces = (
+        np.concatenate(all_faces, axis=0)
+        if (mesh and all_faces)
+        else np.zeros((0, 3), dtype=np.int64)
+    )
+
+    # 整列・スケールの基準には「面に参照される頂点（mesh）/ 有効点（cloud）」のみ使う。
+    ref = np.ones(len(verts), dtype=bool)
+    if mesh:
+        ref = np.zeros(len(verts), dtype=bool)
+        if len(faces):
+            ref[np.unique(faces)] = True
 
     if anchored:
         # 既に実 ENU メートル・Y-up。中央原点へ平行移動するだけ。
-        pts -= np.median(pts, axis=0)
+        center = np.median(verts[ref], axis=0) if ref.any() else np.zeros(3)
+        verts -= center
         scale, scale_source = float(s2), "gps_anchored"
     else:
         # glTF 整列（Y-up・中央原点）
-        a = _alignment_transform(ext[0], pts)
-        pts = trimesh.transform_points(pts, a)
+        a = _alignment_transform(ext[0], verts[ref])
+        verts = trimesh.transform_points(verts, a)
         # メートルスケール復元。なければ DA3 がメートル絶対値なら等倍、相対なら半径15mへ。
         scale = _metric_scale(cam_centers, view_index, viewpoints)
         scale_source = "viewpoint_baseline"
@@ -479,48 +553,69 @@ def build_multiview_pointcloud(
             if is_metric:
                 scale, scale_source = 1.0, "da3_metric"
             else:
-                radius = float(np.percentile(np.linalg.norm(pts, axis=1), 95)) or 1.0
+                radius = float(np.percentile(np.linalg.norm(verts[ref], axis=1), 95)) or 1.0
                 scale, scale_source = 15.0 / radius, "radius_normalized"
-        pts *= scale
-    pts = pts.astype(np.float32)
+        verts *= scale
+    verts = verts.astype(np.float32)
 
     # 地面の高さを推定：中心付近(水平半径6m)の点の下位パーセンタイル。
-    horiz = np.linalg.norm(pts[:, [0, 2]], axis=1)
-    near = horiz < 6.0
-    ground_y = float(np.percentile(pts[near, 1], 8)) if near.sum() > 50 else float(
-        np.percentile(pts[:, 1], 5)
+    rv = verts[ref]
+    horiz_r = np.linalg.norm(rv[:, [0, 2]], axis=1)
+    near = horiz_r < 6.0
+    ground_y = float(np.percentile(rv[near, 1], 8)) if near.sum() > 50 else float(
+        np.percentile(rv[:, 1], 5)
     )
 
     # クリップ：遠方(水平) と 頭上(地面からの高さ)
-    keep = horiz <= far_clip_m
-    keep &= pts[:, 1] <= ground_y + height_clip_m
-    pts = pts[keep]
-    col = col[keep]
-    if pts.shape[0] == 0:
-        raise ValueError("クリップ後に点が残りませんでした（far_clip_m / height_clip_m が厳しすぎます）")
+    horiz = np.linalg.norm(verts[:, [0, 2]], axis=1)
+    bad = (horiz > far_clip_m) | (verts[:, 1] > ground_y + height_clip_m)
 
-    # 上限を超えたらランダム間引き（決定的になるよう等間隔で間引く）
-    if pts.shape[0] > max_points:
-        idx = np.linspace(0, pts.shape[0] - 1, max_points).astype(np.int64)
-        pts = pts[idx]
-        col = col[idx]
-
-    alpha = np.full((col.shape[0], 1), 255, dtype=np.uint8)
-    rgba = np.concatenate([col, alpha], axis=1)
-    cloud = trimesh.PointCloud(vertices=pts, colors=rgba)
     scene = trimesh.Scene()
-    scene.add_geometry(cloud)
-
-    # 点サイズの目安：シーン水平サイズ / sqrt(点数)
-    diag = float(np.linalg.norm(pts[:, [0, 2]].max(axis=0) - pts[:, [0, 2]].min(axis=0))) if len(pts) else 1.0
-    point_size = float(np.clip(diag / max(1.0, np.sqrt(len(pts))) * 1.5, 0.03, 0.25))
+    if mesh:
+        if len(faces):
+            faces = faces[~bad[faces].any(axis=1)]
+        if faces.shape[0] == 0:
+            raise ValueError("クリップ後に面が残りませんでした（far_clip_m / height_clip_m が厳しすぎます）")
+        alpha = np.full((col.shape[0], 1), 255, dtype=np.uint8)
+        rgba = np.concatenate([col, alpha], axis=1)
+        m = trimesh.Trimesh(
+            vertices=verts, faces=faces, vertex_colors=rgba, process=False
+        )
+        m.remove_unreferenced_vertices()
+        if max_faces and len(m.faces) > max_faces:
+            progress("mesh", n, n, f"メッシュ簡略化中（{len(m.faces)}→約{max_faces}面）...")
+            m = _decimate_mesh(m, max_faces)
+        scene.add_geometry(m)
+        vcount, fcount = int(len(m.vertices)), int(len(m.faces))
+        point_size = None
+        representation = "mesh"
+    else:
+        keep = ~bad
+        verts, col = verts[keep], col[keep]
+        if verts.shape[0] == 0:
+            raise ValueError("クリップ後に点が残りませんでした（far_clip_m / height_clip_m が厳しすぎます）")
+        if verts.shape[0] > max_points:
+            idx = np.linspace(0, verts.shape[0] - 1, max_points).astype(np.int64)
+            verts, col = verts[idx], col[idx]
+        alpha = np.full((col.shape[0], 1), 255, dtype=np.uint8)
+        rgba = np.concatenate([col, alpha], axis=1)
+        scene.add_geometry(trimesh.PointCloud(vertices=verts, colors=rgba))
+        diag = (
+            float(np.linalg.norm(verts[:, [0, 2]].max(axis=0) - verts[:, [0, 2]].min(axis=0)))
+            if len(verts)
+            else 1.0
+        )
+        point_size = float(np.clip(diag / max(1.0, np.sqrt(len(verts))) * 1.5, 0.03, 0.25))
+        vcount, fcount = int(len(verts)), 0
+        representation = "pointcloud"
 
     info = {
-        "representation": "pointcloud",
+        "representation": representation,
         "views": int(n),
         "viewpoints": int(len(viewpoints)),
-        "point_count": int(len(pts)),
-        "vertex_count": int(len(pts)),
+        "point_count": vcount,
+        "vertex_count": vcount,
+        "face_count": fcount,
         "metric_scale": float(scale),
         "scale_source": scale_source,
         "gps_anchored": bool(anchored),

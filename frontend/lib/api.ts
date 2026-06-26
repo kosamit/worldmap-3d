@@ -5,10 +5,53 @@ import type { LatLng } from "./geo";
 export const DEFAULT_BACKEND =
   process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
+export interface ModelPreset {
+  id: string;
+  label: string;
+}
+
+export interface ReconstructDefaults {
+  near: number;
+  far: number;
+  discontinuity: number;
+  max_width: number;
+  num_views: number;
+}
+
 export interface AppConfig {
   maps_api_key: string | null;
   has_maps_key: boolean;
   max_route_points: number;
+  depth_backend?: string;
+  depth_default_model?: string;
+  model_presets?: ModelPreset[];
+  max_panorama_views?: number;
+  reconstruct_defaults?: ReconstructDefaults;
+}
+
+// 3D化パラメータ（フロントの「詳細設定」と対応）。
+export interface ReconstructParams {
+  lat: number;
+  lng: number;
+  numViews?: number;
+  fov?: number;
+  near?: number;
+  far?: number;
+  discontinuity?: number;
+  maxWidth?: number;
+  depthModel?: string | null;
+}
+
+// 3D化ジョブの進捗。
+export interface Progress {
+  status: "running" | "done" | "error";
+  phase: string;
+  step: number;
+  total: number;
+  percent: number;
+  message: string;
+  result?: SceneMeta | null;
+  error?: string | null;
 }
 
 export interface SceneLocation {
@@ -106,24 +149,64 @@ export function glbUrl(base: string, meta: SceneMeta): string {
   return `${normalizeBase(base)}${meta.glb_url}`;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 3D化ジョブを開始し、完了までポーリングする。進捗は onProgress に通知する。
+ * 完了時に生成シーンの meta を返す。失敗時は例外を投げる。
+ */
 export async function reconstructPanorama(
   base: string,
-  params: { lat: number; lng: number; numViews?: number; fov?: number },
+  params: ReconstructParams,
+  onProgress?: (p: Progress) => void,
 ): Promise<SceneMeta> {
+  const root = normalizeBase(base);
   const form = new FormData();
   form.append("lat", String(params.lat));
   form.append("lng", String(params.lng));
   form.append("num_views", String(params.numViews ?? 8));
   form.append("fov", String(params.fov ?? 90));
-  const res = await fetch(`${normalizeBase(base)}/api/reconstruct/panorama`, {
+  if (params.near != null) form.append("near", String(params.near));
+  if (params.far != null) form.append("far", String(params.far));
+  if (params.discontinuity != null)
+    form.append("discontinuity", String(params.discontinuity));
+  if (params.maxWidth != null) form.append("max_width", String(params.maxWidth));
+  if (params.depthModel) form.append("depth_model", params.depthModel);
+
+  const res = await fetch(`${root}/api/reconstruct/panorama`, {
     method: "POST",
     body: form,
   });
   if (!res.ok) {
     const detail = await safeDetail(res);
-    throw new Error(`3D化に失敗 (${res.status}): ${detail}`);
+    throw new Error(`3D化の開始に失敗 (${res.status}): ${detail}`);
   }
-  return res.json();
+  const { job_id: jobId } = (await res.json()) as { job_id: string };
+
+  // 進捗ポーリング（モデルロードを含むため十分に長く待つ）。
+  for (let i = 0; i < 3600; i++) {
+    await sleep(700);
+    let prog: Progress;
+    try {
+      const pres = await fetch(`${root}/api/reconstruct/progress/${jobId}`);
+      if (!pres.ok) {
+        if (pres.status === 404) throw new Error("ジョブが見つかりません");
+        continue; // 一時的なエラーはリトライ
+      }
+      prog = (await pres.json()) as Progress;
+    } catch {
+      continue; // ネットワーク瞬断はリトライ
+    }
+    onProgress?.(prog);
+    if (prog.status === "done") {
+      if (!prog.result) throw new Error("結果が空です");
+      return prog.result;
+    }
+    if (prog.status === "error") {
+      throw new Error(prog.error || prog.message || "3D化に失敗しました");
+    }
+  }
+  throw new Error("3D化がタイムアウトしました");
 }
 
 export async function fetchPano(

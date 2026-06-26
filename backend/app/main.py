@@ -16,6 +16,7 @@ import io
 import json
 import os
 import threading
+import uuid
 
 from dotenv import load_dotenv
 
@@ -26,10 +27,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from . import storage
+from . import depth, storage
 from .depth import _select_device, active_backend, estimate_depth
 from .panorama import build_panorama
-from .reconstruct import DEFAULT_FOV_DEG, reconstruct_mesh
+from .reconstruct import (
+    DEFAULT_FOV_DEG,
+    DISCONTINUITY_RATIO,
+    FAR_M,
+    NEAR_M,
+    reconstruct_mesh,
+)
 from .route import (
     MAX_ROUTE_POINTS,
     build_route_scene,
@@ -43,6 +50,17 @@ from .tour import MAX_TOUR_NODES, build_tour
 MAX_PANORAMA_VIEWS = 16
 # パノラマは視点数ぶん連結するため、1 視点あたりの解像度を下げて総頂点数を抑える。
 PANORAMA_MAX_WIDTH = 256
+
+# 3D化ジョブの進捗管理（プロセス内メモリ）。フロントがポーリングして進捗を表示する。
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+# フェーズ → 全体進捗(%)のレンジ割り当て。
+_PHASE_RANGES = {
+    "street_view": (0, 35),
+    "depth": (35, 75),
+    "mesh": (75, 95),
+    "save": (95, 100),
+}
 
 app = FastAPI(title="WorldMap 3D Backend")
 app.add_middleware(
@@ -66,6 +84,54 @@ _infer_lock = threading.Lock()
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _new_job() -> str:
+    """進捗ジョブを作成して job_id を返す。古い完了済みジョブは間引く。"""
+    jid = uuid.uuid4().hex[:12]
+    with _jobs_lock:
+        # 完了/失敗済みが溜まりすぎたら古い順に削除（メモリ肥大防止）。
+        done = [k for k, v in _jobs.items() if v["status"] != "running"]
+        if len(done) > 50:
+            for k in done[: len(done) - 50]:
+                _jobs.pop(k, None)
+        _jobs[jid] = {
+            "status": "running",  # running | done | error
+            "phase": "queued",
+            "step": 0,
+            "total": 0,
+            "percent": 0,
+            "message": "開始しています ...",
+            "result": None,
+            "error": None,
+        }
+    return jid
+
+
+def _update_job(jid: str, **fields) -> None:
+    with _jobs_lock:
+        job = _jobs.get(jid)
+        if job is not None:
+            job.update(fields)
+
+
+def _job_progress(jid: str):
+    """build_panorama / worker から呼ぶ progress(phase, step, total, message)。"""
+
+    def progress(phase: str, step: int, total: int, message: str) -> None:
+        lo, hi = _PHASE_RANGES.get(phase, (0, 100))
+        frac = (step / total) if total else 1.0
+        pct = lo + (hi - lo) * max(0.0, min(1.0, frac))
+        _update_job(
+            jid,
+            phase=phase,
+            step=int(step),
+            total=int(total),
+            percent=int(round(pct)),
+            message=message,
+        )
+
+    return progress
 
 
 def _process(image: Image.Image, source: str, fov_deg: float, location=None) -> dict:
@@ -106,6 +172,18 @@ def config():
         "maps_api_key": maps_key,
         "has_maps_key": bool(maps_key),
         "max_route_points": MAX_ROUTE_POINTS,
+        # 3D化（深度メッシュ）の可変パラメータ用情報
+        "depth_backend": active_backend(),
+        "depth_default_model": depth.default_model(),
+        "model_presets": depth.model_presets(),
+        "max_panorama_views": MAX_PANORAMA_VIEWS,
+        "reconstruct_defaults": {
+            "near": NEAR_M,
+            "far": FAR_M,
+            "discontinuity": DISCONTINUITY_RATIO,
+            "max_width": PANORAMA_MAX_WIDTH,
+            "num_views": 8,
+        },
     }
 
 
@@ -145,30 +223,36 @@ def reconstruct_streetview(
         raise HTTPException(status_code=500, detail=f"3D生成に失敗しました: {exc}")
 
 
-@app.post("/api/reconstruct/panorama")
-def reconstruct_panorama(
-    lat: float = Form(...),
-    lng: float = Form(...),
-    num_views: int = Form(8),
-    pitch: float = Form(0.0),
-    fov: float = Form(90.0),
-    api_key: str | None = Form(None),
-):
-    """同一地点を 360° 分割で撮影し、取り囲む 1 つの 3D 空間へ合成する。"""
-    num_views = max(2, min(MAX_PANORAMA_VIEWS, num_views))
-    headings = [i * 360.0 / num_views for i in range(num_views)]
+def _run_panorama_job(jid: str, lat, lng, headings, pitch, fov, api_key, params):
+    """別スレッドで実行する 3D化本体。進捗を _jobs[jid] に書き込む。"""
+    progress = _job_progress(jid)
+    num_views = len(headings)
     try:
-        images = fetch_streetview_panorama(
-            lat, lng, headings, pitch=pitch, fov=fov, api_key=api_key
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        # 1. Street View 取得（フェーズ: street_view）
+        images = []
+        for i, heading in enumerate(headings):
+            progress("street_view", i, num_views, f"Street View 取得 {i + 1}/{num_views}")
+            image, _ = fetch_streetview(
+                lat, lng, heading=heading, pitch=pitch, fov=fov, api_key=api_key
+            )
+            images.append((image, heading))
+        progress("street_view", num_views, num_views, "Street View 取得 完了")
 
-    try:
+        # 2. 深度推定 + メッシュ合成（フェーズ: depth, mesh）。推論は直列化。
         with _infer_lock:
             scene, info = build_panorama(
-                images, fov_deg=fov, max_width=PANORAMA_MAX_WIDTH
+                images,
+                fov_deg=fov,
+                max_width=params["max_width"],
+                near_m=params["near"],
+                far_m=params["far"],
+                discontinuity_ratio=params["discontinuity"],
+                depth_model=params["depth_model"],
+                progress=progress,
             )
+
+        # 3. 保存（フェーズ: save）
+        progress("save", 0, 1, "glb を保存中 ...")
         sid = storage.new_scene_id()
         meta = {
             "id": sid,
@@ -181,13 +265,88 @@ def reconstruct_panorama(
                 "fov": fov,
                 "num_views": num_views,
             },
+            "depth_backend": active_backend(),
             **info,
         }
         storage.save_scene(scene, meta)
         meta["glb_url"] = f"/scenes/{sid}/scene.glb"
-        return meta
-    except Exception as exc:  # noqa: BLE001 - 500 を HTTPException 化して CORS ヘッダを維持
-        raise HTTPException(status_code=500, detail=f"パノラマ3D生成に失敗しました: {exc}")
+        progress("save", 1, 1, "完了")
+        _update_job(
+            jid,
+            status="done",
+            percent=100,
+            phase="done",
+            message=f"3D化完了: {meta.get('vertex_count', '?')} 頂点",
+            result=meta,
+        )
+    except ValueError as exc:
+        _update_job(jid, status="error", error=str(exc), message=f"失敗: {exc}")
+    except Exception as exc:  # noqa: BLE001 - 例外はジョブ状態に記録
+        _update_job(
+            jid,
+            status="error",
+            error=str(exc),
+            message=f"パノラマ3D生成に失敗しました: {exc}",
+        )
+
+
+def _clamp_reconstruct_params(near, far, discontinuity, max_width, depth_model) -> dict:
+    """フロントから来た再構成パラメータを安全な範囲にクランプする。"""
+    near = max(0.1, min(100.0, float(near)))
+    far = max(near + 0.5, min(1000.0, float(far)))
+    discontinuity = max(0.005, min(1.0, float(discontinuity)))
+    max_width = int(max(64, min(1024, int(max_width))))
+    depth_model = (depth_model or "").strip() or None
+    return {
+        "near": near,
+        "far": far,
+        "discontinuity": discontinuity,
+        "max_width": max_width,
+        "depth_model": depth_model,
+    }
+
+
+@app.post("/api/reconstruct/panorama")
+def reconstruct_panorama(
+    lat: float = Form(...),
+    lng: float = Form(...),
+    num_views: int = Form(8),
+    pitch: float = Form(0.0),
+    fov: float = Form(90.0),
+    near: float = Form(NEAR_M),
+    far: float = Form(FAR_M),
+    discontinuity: float = Form(DISCONTINUITY_RATIO),
+    max_width: int = Form(PANORAMA_MAX_WIDTH),
+    depth_model: str | None = Form(None),
+    api_key: str | None = Form(None),
+):
+    """同一地点を 360° 分割で撮影し、取り囲む 1 つの 3D 空間へ合成する。
+
+    実処理はバックグラウンドのジョブで行い、即座に {job_id} を返す。フロントは
+    GET /api/reconstruct/progress/{job_id} をポーリングして進捗・結果を受け取る。
+    """
+    num_views = max(2, min(MAX_PANORAMA_VIEWS, num_views))
+    headings = [i * 360.0 / num_views for i in range(num_views)]
+    params = _clamp_reconstruct_params(near, far, discontinuity, max_width, depth_model)
+
+    jid = _new_job()
+    thread = threading.Thread(
+        target=_run_panorama_job,
+        args=(jid, lat, lng, headings, pitch, fov, api_key, params),
+        daemon=True,
+    )
+    thread.start()
+    return {"job_id": jid}
+
+
+@app.get("/api/reconstruct/progress/{job_id}")
+def reconstruct_progress(job_id: str):
+    """3D化ジョブの進捗を返す。status は running | done | error。"""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="ジョブが見つかりません")
+        return dict(job)
 
 
 @app.post("/api/reconstruct/route")

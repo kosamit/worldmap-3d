@@ -8,6 +8,7 @@ import {
   glbUrl,
   reconstructPanorama,
   type AppConfig,
+  type Progress,
 } from "@/lib/api";
 import type { LatLng } from "@/lib/geo";
 import TourViewer, { type PanoLink } from "@/components/TourViewer";
@@ -26,6 +27,25 @@ function headingDiff(a: number, b: number): number {
   return d > 180 ? 360 - d : d;
 }
 
+// 3D化（深度メッシュ）の可変パラメータ。
+interface Params3D {
+  depthModel: string;
+  numViews: number;
+  near: number;
+  far: number;
+  discontinuity: number;
+  maxWidth: number;
+}
+
+const FALLBACK_PARAMS: Params3D = {
+  depthModel: "",
+  numViews: 8,
+  near: 1.0,
+  far: 25.0,
+  discontinuity: 0.08,
+  maxWidth: 256,
+};
+
 export default function Home() {
   const [backend, setBackend] = useState(DEFAULT_BACKEND);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -40,8 +60,17 @@ export default function Home() {
   const [mode, setMode] = useState<"pano" | "mesh">("pano");
   const [meshGlb, setMeshGlb] = useState<string | null>(null);
   const [building3d, setBuilding3d] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [params, setParams] = useState<Params3D>(FALLBACK_PARAMS);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  const setParam = useCallback(
+    <K extends keyof Params3D>(key: K, value: Params3D[K]) =>
+      setParams((p) => ({ ...p, [key]: value })),
+    [],
+  );
 
   const [history, setHistory] = useState<string[]>([]);
   const svcRef = useRef<google.maps.StreetViewService | null>(null);
@@ -57,7 +86,19 @@ export default function Home() {
     (async () => {
       try {
         const cfg = await fetchConfig(backend);
-        if (!cancelled) setConfig(cfg);
+        if (!cancelled) {
+          setConfig(cfg);
+          // バックエンドの既定値で 3D化パラメータを初期化。
+          const d = cfg.reconstruct_defaults;
+          setParams({
+            depthModel: cfg.depth_default_model ?? "",
+            numViews: d?.num_views ?? FALLBACK_PARAMS.numViews,
+            near: d?.near ?? FALLBACK_PARAMS.near,
+            far: d?.far ?? FALLBACK_PARAMS.far,
+            discontinuity: d?.discontinuity ?? FALLBACK_PARAMS.discontinuity,
+            maxWidth: d?.max_width ?? FALLBACK_PARAMS.maxWidth,
+          });
+        }
         if (!cancelled && !cfg.has_maps_key) {
           say("Maps APIキー未設定（backend/.env の GOOGLE_MAPS_API_KEY）", true);
         }
@@ -176,12 +217,30 @@ export default function Home() {
       return;
     }
     setBuilding3d(true);
-    say("この地点を3D化中（深度推定、数十秒〜）...");
+    setProgress({
+      status: "running",
+      phase: "queued",
+      step: 0,
+      total: 0,
+      percent: 0,
+      message: "開始しています ...",
+    });
+    say("この地点を3D化中 ...");
     try {
-      const meta = await reconstructPanorama(backend, {
-        lat: current.lat,
-        lng: current.lng,
-      });
+      const meta = await reconstructPanorama(
+        backend,
+        {
+          lat: current.lat,
+          lng: current.lng,
+          numViews: params.numViews,
+          near: params.near,
+          far: params.far,
+          discontinuity: params.discontinuity,
+          maxWidth: params.maxWidth,
+          depthModel: params.depthModel || null,
+        },
+        (p) => setProgress(p),
+      );
       setMeshGlb(glbUrl(backend, meta));
       setMode("mesh");
       say(`3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
@@ -190,7 +249,7 @@ export default function Home() {
     } finally {
       setBuilding3d(false);
     }
-  }, [current, backend, say]);
+  }, [current, backend, say, params]);
 
   const mapPoint: LatLng | null = current
     ? { lat: current.lat, lng: current.lng }
@@ -250,6 +309,123 @@ export default function Home() {
               パノラマに戻る
             </button>
           </div>
+
+          {/* 3D化の進捗バー */}
+          {progress && (building3d || progress.status !== "done") && (
+            <div className="progress">
+              <div className="progressBar">
+                <div
+                  className="progressFill"
+                  style={{ width: `${progress.percent}%` }}
+                  data-error={progress.status === "error"}
+                />
+              </div>
+              <div className="progressText">
+                <span>{progress.message}</span>
+                <span>{progress.percent}%</span>
+              </div>
+            </div>
+          )}
+
+          {/* 詳細設定（折りたたみ） */}
+          <button
+            type="button"
+            className="ghost disclosure"
+            onClick={() => setShowSettings((v) => !v)}
+          >
+            {showSettings ? "▾ 3D化 詳細設定" : "▸ 3D化 詳細設定"}
+            {config?.depth_backend ? `（${config.depth_backend}）` : ""}
+          </button>
+
+          {showSettings && (
+            <div className="settings">
+              <label className="field">
+                深度モデル
+                <input
+                  type="text"
+                  list="depthModels"
+                  value={params.depthModel}
+                  onChange={(e) => setParam("depthModel", e.target.value)}
+                  disabled={building3d}
+                />
+                <datalist id="depthModels">
+                  {(config?.model_presets ?? []).map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </datalist>
+              </label>
+
+              <div className="grid2">
+                <label className="field">
+                  視点数 (2–{config?.max_panorama_views ?? 16})
+                  <input
+                    type="number"
+                    min={2}
+                    max={config?.max_panorama_views ?? 16}
+                    step={1}
+                    value={params.numViews}
+                    onChange={(e) => setParam("numViews", Number(e.target.value))}
+                    disabled={building3d}
+                  />
+                </label>
+                <label className="field">
+                  解像度 max_width
+                  <input
+                    type="number"
+                    min={64}
+                    max={1024}
+                    step={32}
+                    value={params.maxWidth}
+                    onChange={(e) => setParam("maxWidth", Number(e.target.value))}
+                    disabled={building3d}
+                  />
+                </label>
+                <label className="field">
+                  near (m)
+                  <input
+                    type="number"
+                    min={0.1}
+                    step={0.5}
+                    value={params.near}
+                    onChange={(e) => setParam("near", Number(e.target.value))}
+                    disabled={building3d}
+                  />
+                </label>
+                <label className="field">
+                  far (m)
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={params.far}
+                    onChange={(e) => setParam("far", Number(e.target.value))}
+                    disabled={building3d}
+                  />
+                </label>
+                <label className="field">
+                  不連続しきい値
+                  <input
+                    type="number"
+                    min={0.005}
+                    max={1}
+                    step={0.005}
+                    value={params.discontinuity}
+                    onChange={(e) =>
+                      setParam("discontinuity", Number(e.target.value))
+                    }
+                    disabled={building3d}
+                  />
+                </label>
+              </div>
+              <p className="hint">
+                モデルを変えると初回のみロードで時間がかかります。near/far は距離レンジ、
+                不連続しきい値を上げると面が繋がりやすく（小さいと境界で分断）。
+              </p>
+            </div>
+          )}
+
           <p className="hint">
             「3D化」は今いる地点を深度推定で立体メッシュ化し、WASDで歩けます。
           </p>

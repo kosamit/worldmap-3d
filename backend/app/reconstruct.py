@@ -36,12 +36,16 @@ def _resize(image: Image.Image, disparity: np.ndarray, max_width: int):
 
 
 def disparity_to_depth(
-    disparity: np.ndarray, disp_range: tuple[float, float] | None = None
+    disparity: np.ndarray,
+    disp_range: tuple[float, float] | None = None,
+    near_m: float = NEAR_M,
+    far_m: float = FAR_M,
 ) -> np.ndarray:
-    """視差(大=近)を距離(小=近)へ変換し、[NEAR_M, FAR_M] に正規化する。
+    """視差(大=近)を距離(小=近)へ変換し、[near_m, far_m] に正規化する。
 
     disp_range を渡すと、その共通の (min, max) で正規化する。パノラマ合成で
     複数視点のスケールを揃えるために使う。
+    near_m/far_m で出力距離レンジを可変にできる。
     """
     d = disparity.astype(np.float32)
     if disp_range is None:
@@ -53,7 +57,7 @@ def disparity_to_depth(
     else:
         norm = np.clip((d - dmin) / (dmax - dmin), 0.0, 1.0)  # 0..1 (1=最も近い)
     far_to_near = 1.0 - norm  # 0=近い, 1=遠い
-    return NEAR_M + far_to_near * (FAR_M - NEAR_M)
+    return near_m + far_to_near * (far_m - near_m)
 
 
 def _rotate_y(verts: np.ndarray, yaw_deg: float) -> np.ndarray:
@@ -73,15 +77,19 @@ def reconstruct_mesh(
     max_width: int = MAX_WIDTH,
     disp_range: tuple[float, float] | None = None,
     yaw_deg: float = 0.0,
+    near_m: float = NEAR_M,
+    far_m: float = FAR_M,
+    discontinuity_ratio: float = DISCONTINUITY_RATIO,
 ):
     """(trimesh.Trimesh, info dict) を返す。
 
     disp_range: 複数視点で共通の視差スケールを使う場合に指定。
     yaw_deg: 生成メッシュを Y 軸まわりに回転（撮影方位の反映）。
+    near_m/far_m: 出力距離レンジ。discontinuity_ratio: 面を分断する深度差比率。
     """
     image = image.convert("RGB")
     image, disparity, width, height = _resize(image, disparity, max_width)
-    depth = disparity_to_depth(disparity, disp_range=disp_range)
+    depth = disparity_to_depth(disparity, disp_range=disp_range, near_m=near_m, far_m=far_m)
     rgb = np.asarray(image, dtype=np.uint8)  # (H, W, 3)
 
     # ピンホール内部パラメータ
@@ -116,7 +124,7 @@ def reconstruct_mesh(
     d_br = depth[1:, 1:].ravel()
     d_max = np.maximum.reduce([d_tl, d_tr, d_bl, d_br])
     d_min = np.minimum.reduce([d_tl, d_tr, d_bl, d_br])
-    valid = (d_max - d_min) < DISCONTINUITY_RATIO * (FAR_M - NEAR_M)
+    valid = (d_max - d_min) < discontinuity_ratio * (far_m - near_m)
 
     tri1 = np.stack([tl, bl, tr], axis=1)[valid]
     tri2 = np.stack([tr, bl, br], axis=1)[valid]
@@ -133,5 +141,8 @@ def reconstruct_mesh(
         "face_count": int(faces.shape[0]),
         "fov_deg": float(fov_deg),
         "yaw_deg": float(yaw_deg),
+        "near_m": float(near_m),
+        "far_m": float(far_m),
+        "discontinuity_ratio": float(discontinuity_ratio),
     }
     return mesh, info

@@ -71,6 +71,8 @@ interface MultiParams {
   filterWhiteBg: boolean;
   anchorGps: boolean;
   rawMode: boolean;
+  removeObjects: boolean;
+  removeClasses: string;
 }
 
 const FALLBACK_MULTI: MultiParams = {
@@ -96,6 +98,8 @@ const FALLBACK_MULTI: MultiParams = {
   filterWhiteBg: false,
   anchorGps: true,
   rawMode: false,
+  removeObjects: false,
+  removeClasses: "person",
 };
 
 // 現在地(lat,lng,向き)を URL に載せ、Google Maps のように共有・ブックマーク可能にする。
@@ -215,6 +219,8 @@ export default function Home() {
             filterWhiteBg: m?.filter_white_bg ?? FALLBACK_MULTI.filterWhiteBg,
             anchorGps: m?.anchor_gps ?? FALLBACK_MULTI.anchorGps,
             rawMode: m?.raw ?? FALLBACK_MULTI.rawMode,
+            removeObjects: m?.remove_objects ?? FALLBACK_MULTI.removeObjects,
+            removeClasses: m?.remove_classes ?? FALLBACK_MULTI.removeClasses,
           });
         }
         if (!cancelled && !cfg.has_maps_key) {
@@ -445,6 +451,8 @@ export default function Home() {
           filterWhiteBg: multi.filterWhiteBg,
           anchorGps: multi.anchorGps,
           rawMode: multi.rawMode,
+          removeObjects: multi.removeObjects,
+          removeClasses: multi.removeClasses,
           method,
           depthModel: multi.depthModel || null,
         },
@@ -931,6 +939,17 @@ export default function Home() {
                     <label className="checkField">
                       <input
                         type="checkbox"
+                        checked={multi.removeObjects}
+                        onChange={(e) =>
+                          setMultiParam("removeObjects", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      物体を除去（YOLO）
+                    </label>
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
                         checked={multi.anchorGps}
                         onChange={(e) =>
                           setMultiParam("anchorGps", e.target.checked)
@@ -984,6 +1003,19 @@ export default function Home() {
                       白背景を除去
                     </label>
                   </div>
+                  {multi.removeObjects && (
+                    <label className="field">
+                      除去クラス（カンマ区切り: person, car, bicycle …）
+                      <input
+                        type="text"
+                        value={multi.removeClasses}
+                        onChange={(e) =>
+                          setMultiParam("removeClasses", e.target.value)
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                  )}
                   {(() => {
                     const MAX_IMG = 80; // バックエンドの自動制限と一致
                     const perVp = multi.headingCount * multi.pitchCount;

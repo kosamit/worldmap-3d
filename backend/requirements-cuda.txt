@@ -2,3 +2,4 @@
 # torch は CUDA ビルドを別途入れること（setup-cuda.sh が --index-url で導入）。
 depth-anything-3
 xformers
+ultralytics

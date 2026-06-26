@@ -41,6 +41,8 @@ export interface MultiviewDefaults {
   filter_white_bg: boolean;
   anchor_gps: boolean;
   raw: boolean;
+  remove_objects: boolean;
+  remove_classes: string;
 }
 
 export interface AppConfig {
@@ -275,6 +277,8 @@ export interface MultiviewParams {
   filterWhiteBg?: boolean;
   anchorGps?: boolean;
   rawMode?: boolean;
+  removeObjects?: boolean;
+  removeClasses?: string;
   method?: "mesh" | "tsdf";
   tsdfVoxel?: number;
   depthModel?: string | null;
@@ -328,6 +332,8 @@ export async function reconstructMultiview(
   if (params.anchorGps != null)
     form.append("anchor_gps", String(params.anchorGps));
   if (params.rawMode != null) form.append("raw", String(params.rawMode));
+  if (params.removeObjects != null) form.append("remove_objects", String(params.removeObjects));
+  if (params.removeClasses) form.append("remove_classes", params.removeClasses);
   if (params.method) form.append("method", params.method);
   if (params.tsdfVoxel != null) form.append("tsdf_voxel", String(params.tsdfVoxel));
   if (params.depthModel) form.append("depth_model", params.depthModel);

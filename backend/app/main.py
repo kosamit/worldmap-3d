@@ -232,6 +232,8 @@ def config():
             "filter_white_bg": False,
             "anchor_gps": True,
             "raw": False,
+            "remove_objects": False,
+            "remove_classes": "person",
         },
         "multiview_ref_view_strategies": [
             {"id": "saddle_balanced", "label": "saddle_balanced（推奨・バランス）"},
@@ -561,6 +563,18 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                      "深度＋カメラポーズ推定 完了"
                      + ("（レイベース）" if params["use_ray_pose"] else ""))
 
+            # 2.5 物体除去（YOLOセグメンテーション）。指定クラス画素の深度を無効化。
+            if params["remove_objects"] and params["remove_classes"]:
+                progress("depth", 1, 1, "物体除去（YOLO）中 ...")
+                from . import segment
+                masks = segment.removal_masks(
+                    pred["processed_images"], params["remove_classes"])
+                if masks.any():
+                    pred["depth"] = pred["depth"].copy()
+                    pred["depth"][masks] = -1.0  # 非正=無効 → 全手法で除外（穴になる）
+                    progress("depth", 1, 1,
+                             f"物体除去 完了（{int(masks.reshape(len(masks),-1).any(1).sum())}枚で検出）")
+
             # 3. 面の構築（フェーズ: mesh）。method で手法を切替。
             if params["method"] == "tsdf":
                 # TSDF 融合（open3d）。重なり層を1枚の連続面へ。ソリッドな歩ける空間。
@@ -666,6 +680,8 @@ def reconstruct_multiview(
     filter_white_bg: bool = Form(False),
     anchor_gps: bool = Form(True),
     raw: bool = Form(False),
+    remove_objects: bool = Form(False),
+    remove_classes: str = Form("person"),
     method: str = Form("mesh"),
     tsdf_voxel: float = Form(0.12),
     depth_model: str | None = Form(None),
@@ -700,6 +716,8 @@ def reconstruct_multiview(
         "filter_white_bg": bool(filter_white_bg),
         "anchor_gps": bool(anchor_gps),
         "raw": bool(raw),
+        "remove_objects": bool(remove_objects),
+        "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
         "method": "tsdf" if method == "tsdf" else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,

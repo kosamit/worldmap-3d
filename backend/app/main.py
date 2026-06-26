@@ -220,6 +220,10 @@ def config():
             "ensure_percentile": 90.0,
             "far_clip_m": 0.0,
             "height_clip_m": 40.0,
+            "edge_factor": 0.4,
+            "discontinuity_ratio": 0.08,
+            "tsdf_voxel": 0.12,
+            "fov": 90.0,
             "process_res": 504,
             "process_res_method": "upper_bound_resize",
             "use_ray_pose": True,
@@ -578,6 +582,8 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                     anchor_gps=params["anchor_gps"],
                     far_clip_m=params["far_clip_m"],
                     height_clip_m=params["height_clip_m"],
+                    edge_factor=params["edge_factor"],
+                    discontinuity_ratio=params["discontinuity_ratio"],
                     mesh=True,
                     progress=progress,
                 )
@@ -648,6 +654,8 @@ def reconstruct_multiview(
     ensure_percentile: float = Form(90.0),
     far_clip_m: float = Form(0.0),
     height_clip_m: float = Form(40.0),
+    edge_factor: float = Form(0.4),
+    discontinuity_ratio: float = Form(0.08),
     process_res: int = Form(504),
     process_res_method: str = Form("upper_bound_resize"),
     use_ray_pose: bool = Form(True),
@@ -679,6 +687,8 @@ def reconstruct_multiview(
         "ensure_percentile": max(50.0, min(100.0, float(ensure_percentile))),
         "far_clip_m": max(0.0, min(500.0, float(far_clip_m))),    # 0=無効（奥まで表示）
         "height_clip_m": max(0.0, min(200.0, float(height_clip_m))),  # 0=無効
+        "edge_factor": max(0.0, min(3.0, float(edge_factor))),    # スパイク除去(辺÷深度), 0=無効
+        "discontinuity_ratio": max(0.01, min(1.0, float(discontinuity_ratio))),
         "process_res": int(max(168, min(1008, process_res))),
         "process_res_method": prm,
         "use_ray_pose": bool(use_ray_pose),

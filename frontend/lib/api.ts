@@ -29,6 +29,9 @@ export interface MultiviewDefaults {
   ensure_percentile: number;
   far_clip_m: number;
   height_clip_m: number;
+  edge_factor: number;
+  discontinuity_ratio: number;
+  tsdf_voxel: number;
   process_res: number;
   process_res_method: string;
   use_ray_pose: boolean;
@@ -260,6 +263,8 @@ export interface MultiviewParams {
   ensurePercentile?: number;
   farClipM?: number;
   heightClipM?: number;
+  edgeFactor?: number;
+  discontinuityRatio?: number;
   processRes?: number;
   processResMethod?: string;
   useRayPose?: boolean;
@@ -301,6 +306,10 @@ export async function reconstructMultiview(
   if (params.farClipM != null) form.append("far_clip_m", String(params.farClipM));
   if (params.heightClipM != null)
     form.append("height_clip_m", String(params.heightClipM));
+  if (params.edgeFactor != null)
+    form.append("edge_factor", String(params.edgeFactor));
+  if (params.discontinuityRatio != null)
+    form.append("discontinuity_ratio", String(params.discontinuityRatio));
   if (params.processRes != null)
     form.append("process_res", String(params.processRes));
   if (params.processResMethod)

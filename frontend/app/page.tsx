@@ -58,6 +58,10 @@ interface MultiParams {
   ensurePercentile: number;
   farClipM: number;
   heightClipM: number;
+  edgeFactor: number;
+  discontinuityRatio: number;
+  tsdfVoxel: number;
+  fov: number;
   processRes: number;
   processResMethod: string;
   useRayPose: boolean;
@@ -78,6 +82,10 @@ const FALLBACK_MULTI: MultiParams = {
   ensurePercentile: 90,
   farClipM: 0,
   heightClipM: 40,
+  edgeFactor: 0.4,
+  discontinuityRatio: 0.08,
+  tsdfVoxel: 0.12,
+  fov: 90,
   processRes: 504,
   processResMethod: "upper_bound_resize",
   useRayPose: true,
@@ -191,6 +199,11 @@ export default function Home() {
             ensurePercentile: m?.ensure_percentile ?? FALLBACK_MULTI.ensurePercentile,
             farClipM: m?.far_clip_m ?? FALLBACK_MULTI.farClipM,
             heightClipM: m?.height_clip_m ?? FALLBACK_MULTI.heightClipM,
+            edgeFactor: m?.edge_factor ?? FALLBACK_MULTI.edgeFactor,
+            discontinuityRatio:
+              m?.discontinuity_ratio ?? FALLBACK_MULTI.discontinuityRatio,
+            tsdfVoxel: m?.tsdf_voxel ?? FALLBACK_MULTI.tsdfVoxel,
+            fov: m?.fov ?? FALLBACK_MULTI.fov,
             processRes: m?.process_res ?? FALLBACK_MULTI.processRes,
             processResMethod: m?.process_res_method ?? FALLBACK_MULTI.processResMethod,
             useRayPose: m?.use_ray_pose ?? FALLBACK_MULTI.useRayPose,
@@ -416,6 +429,10 @@ export default function Home() {
           ensurePercentile: multi.ensurePercentile,
           farClipM: multi.farClipM,
           heightClipM: multi.heightClipM,
+          edgeFactor: multi.edgeFactor,
+          discontinuityRatio: multi.discontinuityRatio,
+          tsdfVoxel: multi.tsdfVoxel,
+          fov: multi.fov,
           processRes: multi.processRes,
           processResMethod: multi.processResMethod,
           useRayPose: multi.useRayPose,
@@ -788,6 +805,62 @@ export default function Home() {
                         value={multi.heightClipM}
                         onChange={(e) =>
                           setMultiParam("heightClipM", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      スパイク除去 辺÷深度 (0=無効)
+                      <input
+                        type="number"
+                        min={0}
+                        max={3}
+                        step={0.05}
+                        value={multi.edgeFactor}
+                        onChange={(e) =>
+                          setMultiParam("edgeFactor", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      不連続しきい値
+                      <input
+                        type="number"
+                        min={0.01}
+                        max={1}
+                        step={0.01}
+                        value={multi.discontinuityRatio}
+                        onChange={(e) =>
+                          setMultiParam("discontinuityRatio", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      画角 fov (60–120)
+                      <input
+                        type="number"
+                        min={60}
+                        max={120}
+                        step={5}
+                        value={multi.fov}
+                        onChange={(e) =>
+                          setMultiParam("fov", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      TSDFボクセル (m)
+                      <input
+                        type="number"
+                        min={0.04}
+                        max={0.4}
+                        step={0.01}
+                        value={multi.tsdfVoxel}
+                        onChange={(e) =>
+                          setMultiParam("tsdfVoxel", Number(e.target.value))
                         }
                         disabled={building3d}
                       />

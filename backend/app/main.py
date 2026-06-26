@@ -87,6 +87,13 @@ app.mount("/scenes", StaticFiles(directory=str(storage.DATA_DIR)), name="scenes"
 app.mount("/tours", StaticFiles(directory=str(storage.TOURS_DIR)), name="tours")
 app.mount("/panos", StaticFiles(directory=str(storage.PANOS_DIR)), name="panos")
 
+# 3D品質 比較ギャラリー（verify/run_experiments.sh の出力）を配信（存在すれば）。
+from pathlib import Path as _Path  # noqa: E402
+
+_GALLERY_DIR = _Path(__file__).resolve().parents[2] / "verify"
+if _GALLERY_DIR.exists():
+    app.mount("/gallery", StaticFiles(directory=str(_GALLERY_DIR), html=True), name="gallery")
+
 
 # 推論パイプライン(transformers)は非リエントラント。同時実行クラッシュを防ぐため直列化。
 _infer_lock = threading.Lock()
@@ -550,21 +557,30 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                      "深度＋カメラポーズ推定 完了"
                      + ("（レイベース）" if params["use_ray_pose"] else ""))
 
-            # 3. 整合メッシュの構築（フェーズ: mesh）。GPSアンカー配置で面を張る。
-            scene, info = build_multiview_pointcloud(
-                pred, view_index, viewpoints,
-                max_width=params["max_width"],
-                conf_percentile=params["conf_percentile"],
-                ensure_percentile=params["ensure_percentile"],
-                drop_sky=params["drop_sky"],
-                filter_black_bg=params["filter_black_bg"],
-                filter_white_bg=params["filter_white_bg"],
-                anchor_gps=params["anchor_gps"],
-                far_clip_m=params["far_clip_m"],
-                height_clip_m=params["height_clip_m"],
-                mesh=True,
-                progress=progress,
-            )
+            # 3. 面の構築（フェーズ: mesh）。method で手法を切替。
+            if params["method"] == "tsdf":
+                # TSDF 融合（open3d）。重なり層を1枚の連続面へ。ソリッドな歩ける空間。
+                from .reconstruct_experiments import build_tsdf_mesh
+                scene, info = build_tsdf_mesh(
+                    pred, view_index, viewpoints,
+                    voxel=params["tsdf_voxel"], progress=progress,
+                )
+            else:
+                # GPSアンカー配置で面を張る（既定）。
+                scene, info = build_multiview_pointcloud(
+                    pred, view_index, viewpoints,
+                    max_width=params["max_width"],
+                    conf_percentile=params["conf_percentile"],
+                    ensure_percentile=params["ensure_percentile"],
+                    drop_sky=params["drop_sky"],
+                    filter_black_bg=params["filter_black_bg"],
+                    filter_white_bg=params["filter_white_bg"],
+                    anchor_gps=params["anchor_gps"],
+                    far_clip_m=params["far_clip_m"],
+                    height_clip_m=params["height_clip_m"],
+                    mesh=True,
+                    progress=progress,
+                )
 
         # 4. 保存（フェーズ: save）
         progress("save", 0, 1, "glb を保存中 ...")
@@ -640,6 +656,8 @@ def reconstruct_multiview(
     filter_black_bg: bool = Form(False),
     filter_white_bg: bool = Form(False),
     anchor_gps: bool = Form(True),
+    method: str = Form("mesh"),
+    tsdf_voxel: float = Form(0.12),
     depth_model: str | None = Form(None),
     api_key: str | None = Form(None),
 ):
@@ -669,6 +687,8 @@ def reconstruct_multiview(
         "filter_black_bg": bool(filter_black_bg),
         "filter_white_bg": bool(filter_white_bg),
         "anchor_gps": bool(anchor_gps),
+        "method": "tsdf" if method == "tsdf" else "mesh",
+        "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }
     jid = _new_job()

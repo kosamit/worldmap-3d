@@ -40,4 +40,13 @@ PYEOF
   echo "=== [$name] render gallery ==="
   node "$ROOT/verify/gallery.mjs" "$manifest" "$ROOT/verify/gallery_$name"
 done
-echo "ALL DONE. ギャラリー: verify/gallery_*/index.html"
+# トップ index（ギャラリー一覧）を生成 → /gallery/index.html で開ける
+{
+  echo '<!doctype html><meta charset="utf-8"><title>3D品質ギャラリー</title>'
+  echo '<style>body{font-family:sans-serif;background:#111;color:#eee;padding:24px}a{color:#7df;font-size:18px;display:block;margin:10px 0}</style>'
+  echo '<h1>3D品質 比較ギャラリー</h1>'
+  for d in "$ROOT"/verify/gallery_*/; do
+    n=$(basename "$d"); [ -f "$d/index.html" ] && echo "<a href=\"$n/index.html\">$n</a>"
+  done
+} > "$ROOT/verify/index.html"
+echo "ALL DONE. ギャラリー: /gallery/index.html （verify/index.html）"

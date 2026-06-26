@@ -305,6 +305,27 @@ body {
   background: #3a434f;
 }
 
+.panel button.primaryWide.tsdf {
+  background: #2563c9;
+  margin-top: 6px;
+}
+
+.panel button.primaryWide.tsdf:hover {
+  background: #2f74e0;
+}
+
+.galleryLink {
+  display: block;
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: #7fb4ff;
+  text-decoration: none;
+}
+
+.galleryLink:hover {
+  text-decoration: underline;
+}
+
 /* ---- 3D ビュー ---- */
 .main {
   flex: 1 1 auto;

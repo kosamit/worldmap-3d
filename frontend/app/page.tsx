@@ -382,7 +382,8 @@ export default function Home() {
   }, [current, backend, say, params]);
 
   // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
-  const handle3DMulti = useCallback(async () => {
+  // method="tsdf" で TSDF 融合（重なり層を1枚の連続面へ＝ソリッド）。
+  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" = "mesh") => {
     if (!current) {
       say("先に地図で地点を選んでください", true);
       return;
@@ -396,7 +397,11 @@ export default function Home() {
       percent: 0,
       message: "開始しています ...",
     });
-    say("高精度3D化中（周辺地点を収集→マルチビュー推論）...");
+    say(
+      method === "tsdf"
+        ? "TSDF 3D化中（周辺地点を収集→推論→TSDF融合）..."
+        : "高精度3D化中（周辺地点を収集→マルチビュー推論）...",
+    );
     try {
       const meta = await reconstructMultiview(
         backend,
@@ -419,6 +424,7 @@ export default function Home() {
           filterBlackBg: multi.filterBlackBg,
           filterWhiteBg: multi.filterWhiteBg,
           anchorGps: multi.anchorGps,
+          method,
           depthModel: multi.depthModel || null,
         },
         (p) => setProgress(p),
@@ -487,15 +493,26 @@ export default function Home() {
           </p>
 
           {config?.multiview_available && (
-            <button
-              type="button"
-              className="primaryWide"
-              onClick={handle3DMulti}
-              disabled={!current || building3d}
-              title="周辺の複数Street View地点を集め、DA3マルチビューで整合した高精度メッシュを作ります"
-            >
-              {building3d ? "生成中..." : "★ 高精度3D化（マルチビュー）"}
-            </button>
+            <>
+              <button
+                type="button"
+                className="primaryWide"
+                onClick={() => handle3DMulti("mesh")}
+                disabled={!current || building3d}
+                title="周辺の複数Street View地点を集め、DA3マルチビューで整合した高精度メッシュを作ります"
+              >
+                {building3d ? "生成中..." : "★ 高精度3D化（マルチビュー）"}
+              </button>
+              <button
+                type="button"
+                className="primaryWide tsdf"
+                onClick={() => handle3DMulti("tsdf")}
+                disabled={!current || building3d}
+                title="TSDF融合: 重なった深度を1枚の連続面に統合した、よりソリッドな歩ける空間を作ります（やや重い）"
+              >
+                {building3d ? "生成中..." : "▣ TSDF 3D化（ソリッド）"}
+              </button>
+            </>
           )}
 
           <div className="grid2 row2">
@@ -515,6 +532,18 @@ export default function Home() {
               パノラマに戻る
             </button>
           </div>
+
+          {config?.multiview_available && (
+            <a
+              className="galleryLink"
+              href={`${backend.replace(/\/$/, "")}/gallery/index.html`}
+              target="_blank"
+              rel="noreferrer"
+              title="各再構成手法(TSDF/Poisson/平滑化ほか)の比較ギャラリーを開く（verify/run_experiments.sh の出力）"
+            >
+              🖼 3D品質 比較ギャラリーを開く
+            </a>
+          )}
 
           {/* 3D化の進捗バー */}
           {progress && (building3d || progress.status !== "done") && (

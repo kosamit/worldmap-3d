@@ -23,7 +23,7 @@ def baseline(p, vi, vps):
 
 
 def aggressive(p, vi, vps):
-    return build_multiview_pointcloud(p, vi, vps, mesh=True, edge_factor=4.0,
+    return build_multiview_pointcloud(p, vi, vps, mesh=True, edge_factor=0.25,
                                       discontinuity_ratio=0.05, **COMMON)
 
 

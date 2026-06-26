@@ -425,7 +425,7 @@ def build_multiview_pointcloud(
     max_points: int = 600000,
     mesh: bool = False,
     discontinuity_ratio: float = 0.08,
-    edge_factor: float = 8.0,
+    edge_factor: float = 0.4,  # 「最長辺÷深度」の上限。超えたらスパイクとして除去（0で無効）
     max_faces: int = 1_200_000,
     level_ground: bool = True,
     drop_small: bool = True,
@@ -584,14 +584,18 @@ def build_multiview_pointcloud(
             tri2 = np.stack([tr, bl, br], axis=1)[keepq]
             all_faces.append(np.concatenate([tri1, tri2], axis=0) + voff)
             if edge_factor and edge_factor > 0:
-                # 各三角形のワールド最長辺（オクルージョン跨ぎのスパイク検出用）。
-                def _maxedge(t):
+                # 「最長辺 ÷ 三角形の平均深度」を見る。正面/遠方の面は辺も深度も比例して
+                # 大きいので比は一定で残る。オクルージョンを跨ぐスパイクだけ比が跳ね上がる。
+                # （絶対長で見ると遠い壁ごと削れて「奥がすかすか」になる。）
+                def _edge_over_depth(t):
                     p = world[t]  # (M,3,3)
                     e0 = np.linalg.norm(p[:, 0] - p[:, 1], axis=1)
                     e1 = np.linalg.norm(p[:, 1] - p[:, 2], axis=1)
                     e2 = np.linalg.norm(p[:, 2] - p[:, 0], axis=1)
-                    return np.maximum(np.maximum(e0, e1), e2)
-                all_edge.append(np.concatenate([_maxedge(tri1), _maxedge(tri2)]))
+                    emax = np.maximum(np.maximum(e0, e1), e2)
+                    zt = (zr[t[:, 0]] + zr[t[:, 1]] + zr[t[:, 2]]) / 3.0
+                    return emax / np.maximum(zt, 1e-6)
+                all_edge.append(np.concatenate([_edge_over_depth(tri1), _edge_over_depth(tri2)]))
             all_verts.append(world.astype(np.float32))
             all_col.append(colg)
             voff += world.shape[0]
@@ -609,12 +613,12 @@ def build_multiview_pointcloud(
         if (mesh and all_faces)
         else np.zeros((0, 3), dtype=np.int64)
     )
-    # スパイク（オクルージョンを跨ぐ引き伸ばし三角形）を最長辺の中央値比で除去。
+    # スパイク（オクルージョンを跨ぐ引き伸ばし三角形）を「最長辺÷深度」で除去。
+    # 深度正規化なので遠方の壁(辺も深度も比例)は残り、跨ぎ三角形だけ落ちる。
     spike_removed = 0
     if mesh and all_edge and len(faces):
-        edge_len = np.concatenate(all_edge)
-        med = float(np.median(edge_len)) or 1e-9
-        spike = edge_len > med * edge_factor
+        edge_ratio = np.concatenate(all_edge)
+        spike = edge_ratio > edge_factor
         spike_removed = int(spike.sum())
         if spike.any():
             faces = faces[~spike]

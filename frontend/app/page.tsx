@@ -74,7 +74,7 @@ const FALLBACK_MULTI: MultiParams = {
   headingCount: 8,
   pitchCount: 3,
   radiusM: 12,
-  confPercentile: 40,
+  confPercentile: 25,
   ensurePercentile: 90,
   farClipM: 0,
   heightClipM: 40,

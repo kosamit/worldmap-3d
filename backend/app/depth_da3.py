@@ -17,6 +17,12 @@ from PIL import Image
 # DA3METRIC-* はメートル絶対値。相対で良ければ DA3-LARGE 等でも可。
 DA3_MODEL_ID = os.environ.get("DA3_MODEL", "depth-anything/DA3METRIC-LARGE")
 
+# マルチビュー（カメラポーズ推定つき）用モデル。DA3METRIC/MONO は深度のみで
+# ポーズを返さないため、cam_enc/cam_dec を持つ標準 DA3 を使う必要がある。
+DA3_MULTIVIEW_MODEL_ID = os.environ.get(
+    "DA3_MULTIVIEW_MODEL", "depth-anything/DA3-LARGE"
+)
+
 # モデルIDごとにロード済みモデルをキャッシュ（切替時に再ロードできるよう dict 化）。
 _models: dict[str, object] = {}
 _EPS = 1e-6
@@ -59,3 +65,76 @@ def estimate_disparity(image: Image.Image, model_id: str | None = None) -> np.nd
             disp_img.resize((width, height), Image.BILINEAR), dtype=np.float32
         )
     return disparity
+
+
+# DA3 が選べる「参照ビュー選択」戦略。マルチビューでどの視点を基準座標にするか。
+REF_VIEW_STRATEGIES = ("saddle_balanced", "saddle_sim_range", "first", "middle")
+# 入力画像のリサイズ方式。high_res=lower_bound（短辺基準で大きめ）/ low_res=upper_bound（軽い）。
+PROCESS_RES_METHODS = ("upper_bound_resize", "lower_bound_resize", "upper_bound_crop")
+
+
+def infer_multiview(
+    images: list[Image.Image],
+    model_id: str | None = None,
+    *,
+    process_res: int = 504,
+    process_res_method: str = "upper_bound_resize",
+    use_ray_pose: bool = False,
+    ref_view_strategy: str = "saddle_balanced",
+) -> dict:
+    """複数画像を1回の推論にまとめ、視点間で整合した深度＋カメラポーズを返す。
+
+    DA3 のマルチビュー機能（カメラデコーダ）を使う。返り値は dict:
+      depth:            (N, H, W) float32  遠い=大（相対 or メートル）
+      conf:             (N, H, W) float32  信頼度
+      sky:              (N, H, W) bool または None  空（オブジェクト）判定マスク
+      is_metric:        int  1ならメートル絶対値、0なら相対スケール
+      extrinsics:       (N, 3, 4) または (N, 4, 4) float32  world->camera
+      intrinsics:       (N, 3, 3) float32  処理解像度 (H, W) 基準
+      processed_images: (N, H, W, 3) uint8 推論に使われた画像（深度と同解像度）
+
+    パラメータ（DA3 のフルオプションを露出）:
+      process_res:        処理解像度（大きいほど精細・重い）。
+      process_res_method: リサイズ方式（PROCESS_RES_METHODS）。
+      use_ray_pose:       True で「レイ（光線）ベースのポーズ推定」を使う。カメラ
+                          デコーダの代わりに各画素レイから RANSAC でポーズ/内部
+                          パラメータを解く。視点配置によってはこちらが安定する。
+      ref_view_strategy:  基準ビューの選び方（REF_VIEW_STRATEGIES）。
+
+    使うモデルは cam_enc/cam_dec を持つ必要がある（DA3METRIC/MONO は不可）。
+    """
+    model_id = model_id or DA3_MULTIVIEW_MODEL_ID
+    model = _load(model_id)
+
+    if ref_view_strategy not in REF_VIEW_STRATEGIES:
+        ref_view_strategy = "saddle_balanced"
+    if process_res_method not in PROCESS_RES_METHODS:
+        process_res_method = "upper_bound_resize"
+
+    arrays = [np.asarray(im.convert("RGB")) for im in images]
+    prediction = model.inference(
+        arrays,
+        process_res=int(process_res),
+        process_res_method=process_res_method,
+        use_ray_pose=bool(use_ray_pose),
+        ref_view_strategy=ref_view_strategy,
+    )
+
+    if prediction.extrinsics is None or prediction.intrinsics is None:
+        raise ValueError(
+            f"モデル {model_id} はカメラポーズを返しません"
+            "（マルチビューには DA3-LARGE 等のカメラ対応モデルが必要）"
+        )
+
+    sky = getattr(prediction, "sky", None)
+    return {
+        "depth": np.asarray(prediction.depth, dtype=np.float32),
+        "conf": (
+            None if prediction.conf is None else np.asarray(prediction.conf, dtype=np.float32)
+        ),
+        "sky": (None if sky is None else np.asarray(sky, dtype=bool)),
+        "is_metric": int(getattr(prediction, "is_metric", 0) or 0),
+        "extrinsics": np.asarray(prediction.extrinsics, dtype=np.float32),
+        "intrinsics": np.asarray(prediction.intrinsics, dtype=np.float32),
+        "processed_images": np.asarray(prediction.processed_images, dtype=np.uint8),
+    }

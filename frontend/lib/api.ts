@@ -18,6 +18,25 @@ export interface ReconstructDefaults {
   num_views: number;
 }
 
+export interface MultiviewDefaults {
+  max_views: number;
+  heading_count: number;
+  radius_m: number;
+  fov: number;
+  max_width: number;
+  conf_percentile: number;
+  ensure_percentile: number;
+  far_clip_m: number;
+  height_clip_m: number;
+  process_res: number;
+  process_res_method: string;
+  use_ray_pose: boolean;
+  ref_view_strategy: string;
+  drop_sky: boolean;
+  filter_black_bg: boolean;
+  filter_white_bg: boolean;
+}
+
 export interface AppConfig {
   maps_api_key: string | null;
   has_maps_key: boolean;
@@ -27,6 +46,12 @@ export interface AppConfig {
   model_presets?: ModelPreset[];
   max_panorama_views?: number;
   reconstruct_defaults?: ReconstructDefaults;
+  multiview_available?: boolean;
+  multiview_default_model?: string;
+  multiview_model_presets?: ModelPreset[];
+  multiview_defaults?: MultiviewDefaults;
+  multiview_ref_view_strategies?: ModelPreset[];
+  multiview_process_res_methods?: ModelPreset[];
 }
 
 // 3D化パラメータ（フロントの「詳細設定」と対応）。
@@ -151,9 +176,39 @@ export function glbUrl(base: string, meta: SceneMeta): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// 3D化ジョブの進捗を完了までポーリングし、結果 meta を返す共通ヘルパー。
+async function pollJob(
+  root: string,
+  jobId: string,
+  onProgress?: (p: Progress) => void,
+): Promise<SceneMeta> {
+  for (let i = 0; i < 3600; i++) {
+    await sleep(700);
+    let prog: Progress;
+    try {
+      const pres = await fetch(`${root}/api/reconstruct/progress/${jobId}`);
+      if (!pres.ok) {
+        if (pres.status === 404) throw new Error("ジョブが見つかりません");
+        continue; // 一時的なエラーはリトライ
+      }
+      prog = (await pres.json()) as Progress;
+    } catch {
+      continue; // ネットワーク瞬断はリトライ
+    }
+    onProgress?.(prog);
+    if (prog.status === "done") {
+      if (!prog.result) throw new Error("結果が空です");
+      return prog.result;
+    }
+    if (prog.status === "error") {
+      throw new Error(prog.error || prog.message || "3D化に失敗しました");
+    }
+  }
+  throw new Error("3D化がタイムアウトしました");
+}
+
 /**
- * 3D化ジョブを開始し、完了までポーリングする。進捗は onProgress に通知する。
- * 完了時に生成シーンの meta を返す。失敗時は例外を投げる。
+ * 単一地点パノラマ深度メッシュの3D化ジョブを開始し、完了までポーリングする。
  */
 export async function reconstructPanorama(
   base: string,
@@ -182,31 +237,83 @@ export async function reconstructPanorama(
     throw new Error(`3D化の開始に失敗 (${res.status}): ${detail}`);
   }
   const { job_id: jobId } = (await res.json()) as { job_id: string };
+  return pollJob(root, jobId, onProgress);
+}
 
-  // 進捗ポーリング（モデルロードを含むため十分に長く待つ）。
-  for (let i = 0; i < 3600; i++) {
-    await sleep(700);
-    let prog: Progress;
-    try {
-      const pres = await fetch(`${root}/api/reconstruct/progress/${jobId}`);
-      if (!pres.ok) {
-        if (pres.status === 404) throw new Error("ジョブが見つかりません");
-        continue; // 一時的なエラーはリトライ
-      }
-      prog = (await pres.json()) as Progress;
-    } catch {
-      continue; // ネットワーク瞬断はリトライ
-    }
-    onProgress?.(prog);
-    if (prog.status === "done") {
-      if (!prog.result) throw new Error("結果が空です");
-      return prog.result;
-    }
-    if (prog.status === "error") {
-      throw new Error(prog.error || prog.message || "3D化に失敗しました");
-    }
+// 高精度3D化（DA3 マルチビュー整合メッシュ）のパラメータ。
+export interface MultiviewParams {
+  lat: number;
+  lng: number;
+  maxViews?: number;
+  headingCount?: number;
+  radiusM?: number;
+  fov?: number;
+  maxWidth?: number;
+  confPercentile?: number;
+  ensurePercentile?: number;
+  farClipM?: number;
+  heightClipM?: number;
+  processRes?: number;
+  processResMethod?: string;
+  useRayPose?: boolean;
+  refViewStrategy?: string;
+  dropSky?: boolean;
+  filterBlackBg?: boolean;
+  filterWhiteBg?: boolean;
+  depthModel?: string | null;
+}
+
+/**
+ * 周辺の複数 Street View 地点を集め、DA3 マルチビューで整合した歩けるメッシュを作る。
+ * ジョブを開始し、完了までポーリングして結果 meta を返す。
+ */
+export async function reconstructMultiview(
+  base: string,
+  params: MultiviewParams,
+  onProgress?: (p: Progress) => void,
+): Promise<SceneMeta> {
+  const root = normalizeBase(base);
+  const form = new FormData();
+  form.append("lat", String(params.lat));
+  form.append("lng", String(params.lng));
+  if (params.maxViews != null) form.append("max_views", String(params.maxViews));
+  if (params.headingCount != null)
+    form.append("heading_count", String(params.headingCount));
+  if (params.radiusM != null) form.append("radius_m", String(params.radiusM));
+  if (params.fov != null) form.append("fov", String(params.fov));
+  if (params.maxWidth != null) form.append("max_width", String(params.maxWidth));
+  if (params.confPercentile != null)
+    form.append("conf_percentile", String(params.confPercentile));
+  if (params.ensurePercentile != null)
+    form.append("ensure_percentile", String(params.ensurePercentile));
+  if (params.farClipM != null) form.append("far_clip_m", String(params.farClipM));
+  if (params.heightClipM != null)
+    form.append("height_clip_m", String(params.heightClipM));
+  if (params.processRes != null)
+    form.append("process_res", String(params.processRes));
+  if (params.processResMethod)
+    form.append("process_res_method", params.processResMethod);
+  if (params.useRayPose != null)
+    form.append("use_ray_pose", String(params.useRayPose));
+  if (params.refViewStrategy)
+    form.append("ref_view_strategy", params.refViewStrategy);
+  if (params.dropSky != null) form.append("drop_sky", String(params.dropSky));
+  if (params.filterBlackBg != null)
+    form.append("filter_black_bg", String(params.filterBlackBg));
+  if (params.filterWhiteBg != null)
+    form.append("filter_white_bg", String(params.filterWhiteBg));
+  if (params.depthModel) form.append("depth_model", params.depthModel);
+
+  const res = await fetch(`${root}/api/reconstruct/multiview`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(`高精度3D化の開始に失敗 (${res.status}): ${detail}`);
   }
-  throw new Error("3D化がタイムアウトしました");
+  const { job_id: jobId } = (await res.json()) as { job_id: string };
+  return pollJob(root, jobId, onProgress);
 }
 
 export async function fetchPano(

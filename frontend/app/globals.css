@@ -95,9 +95,23 @@ body {
   color: #9fb3c8;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   margin-top: 4px;
+}
+
+.checkField {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #9fb3c8;
+}
+
+.checkField input {
+  width: auto;
+  margin: 0;
 }
 
 .inline {
@@ -261,6 +275,30 @@ body {
 
 .settings .grid2 {
   gap: 8px;
+}
+
+.settingsHead {
+  margin: 14px 0 4px;
+  padding-top: 10px;
+  border-top: 1px solid #2c333d;
+  font-size: 0.85rem;
+  color: #9fb3c8;
+}
+
+.panel button.primaryWide {
+  width: 100%;
+  margin-top: 10px;
+  background: #1f9d63;
+  font-size: 0.9rem;
+  padding: 9px 8px;
+}
+
+.panel button.primaryWide:hover {
+  background: #25b873;
+}
+
+.panel button.primaryWide:disabled {
+  background: #3a434f;
 }
 
 /* ---- 3D ビュー ---- */

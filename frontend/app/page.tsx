@@ -7,6 +7,7 @@ import {
   fetchPano,
   glbUrl,
   reconstructPanorama,
+  reconstructMultiview,
   type AppConfig,
   type Progress,
 } from "@/lib/api";
@@ -46,6 +47,43 @@ const FALLBACK_PARAMS: Params3D = {
   maxWidth: 256,
 };
 
+// 高精度3D化（DA3マルチビュー）の可変パラメータ。
+interface MultiParams {
+  depthModel: string;
+  maxViews: number;
+  headingCount: number;
+  radiusM: number;
+  confPercentile: number;
+  ensurePercentile: number;
+  farClipM: number;
+  heightClipM: number;
+  processRes: number;
+  processResMethod: string;
+  useRayPose: boolean;
+  refViewStrategy: string;
+  dropSky: boolean;
+  filterBlackBg: boolean;
+  filterWhiteBg: boolean;
+}
+
+const FALLBACK_MULTI: MultiParams = {
+  depthModel: "",
+  maxViews: 4,
+  headingCount: 4,
+  radiusM: 12,
+  confPercentile: 40,
+  ensurePercentile: 90,
+  farClipM: 45,
+  heightClipM: 9,
+  processRes: 504,
+  processResMethod: "upper_bound_resize",
+  useRayPose: false,
+  refViewStrategy: "saddle_balanced",
+  dropSky: true,
+  filterBlackBg: false,
+  filterWhiteBg: false,
+};
+
 export default function Home() {
   const [backend, setBackend] = useState(DEFAULT_BACKEND);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -63,12 +101,18 @@ export default function Home() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [params, setParams] = useState<Params3D>(FALLBACK_PARAMS);
+  const [multi, setMulti] = useState<MultiParams>(FALLBACK_MULTI);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   const setParam = useCallback(
     <K extends keyof Params3D>(key: K, value: Params3D[K]) =>
       setParams((p) => ({ ...p, [key]: value })),
+    [],
+  );
+  const setMultiParam = useCallback(
+    <K extends keyof MultiParams>(key: K, value: MultiParams[K]) =>
+      setMulti((p) => ({ ...p, [key]: value })),
     [],
   );
 
@@ -97,6 +141,24 @@ export default function Home() {
             far: d?.far ?? FALLBACK_PARAMS.far,
             discontinuity: d?.discontinuity ?? FALLBACK_PARAMS.discontinuity,
             maxWidth: d?.max_width ?? FALLBACK_PARAMS.maxWidth,
+          });
+          const m = cfg.multiview_defaults;
+          setMulti({
+            depthModel: cfg.multiview_default_model ?? "",
+            maxViews: m?.max_views ?? FALLBACK_MULTI.maxViews,
+            headingCount: m?.heading_count ?? FALLBACK_MULTI.headingCount,
+            radiusM: m?.radius_m ?? FALLBACK_MULTI.radiusM,
+            confPercentile: m?.conf_percentile ?? FALLBACK_MULTI.confPercentile,
+            ensurePercentile: m?.ensure_percentile ?? FALLBACK_MULTI.ensurePercentile,
+            farClipM: m?.far_clip_m ?? FALLBACK_MULTI.farClipM,
+            heightClipM: m?.height_clip_m ?? FALLBACK_MULTI.heightClipM,
+            processRes: m?.process_res ?? FALLBACK_MULTI.processRes,
+            processResMethod: m?.process_res_method ?? FALLBACK_MULTI.processResMethod,
+            useRayPose: m?.use_ray_pose ?? FALLBACK_MULTI.useRayPose,
+            refViewStrategy: m?.ref_view_strategy ?? FALLBACK_MULTI.refViewStrategy,
+            dropSky: m?.drop_sky ?? FALLBACK_MULTI.dropSky,
+            filterBlackBg: m?.filter_black_bg ?? FALLBACK_MULTI.filterBlackBg,
+            filterWhiteBg: m?.filter_white_bg ?? FALLBACK_MULTI.filterWhiteBg,
           });
         }
         if (!cancelled && !cfg.has_maps_key) {
@@ -251,6 +313,56 @@ export default function Home() {
     }
   }, [current, backend, say, params]);
 
+  // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
+  const handle3DMulti = useCallback(async () => {
+    if (!current) {
+      say("先に地図で地点を選んでください", true);
+      return;
+    }
+    setBuilding3d(true);
+    setProgress({
+      status: "running",
+      phase: "queued",
+      step: 0,
+      total: 0,
+      percent: 0,
+      message: "開始しています ...",
+    });
+    say("高精度3D化中（周辺地点を収集→マルチビュー推論）...");
+    try {
+      const meta = await reconstructMultiview(
+        backend,
+        {
+          lat: current.lat,
+          lng: current.lng,
+          maxViews: multi.maxViews,
+          headingCount: multi.headingCount,
+          radiusM: multi.radiusM,
+          confPercentile: multi.confPercentile,
+          ensurePercentile: multi.ensurePercentile,
+          farClipM: multi.farClipM,
+          heightClipM: multi.heightClipM,
+          processRes: multi.processRes,
+          processResMethod: multi.processResMethod,
+          useRayPose: multi.useRayPose,
+          refViewStrategy: multi.refViewStrategy,
+          dropSky: multi.dropSky,
+          filterBlackBg: multi.filterBlackBg,
+          filterWhiteBg: multi.filterWhiteBg,
+          depthModel: multi.depthModel || null,
+        },
+        (p) => setProgress(p),
+      );
+      setMeshGlb(glbUrl(backend, meta));
+      setMode("mesh");
+      say(`高精度3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
+    } catch (err) {
+      say((err as Error).message, true);
+    } finally {
+      setBuilding3d(false);
+    }
+  }, [current, backend, say, multi]);
+
   const mapPoint: LatLng | null = current
     ? { lat: current.lat, lng: current.lng }
     : null;
@@ -292,13 +404,25 @@ export default function Home() {
             {busy && " （取得中…）"}
           </p>
 
+          {config?.multiview_available && (
+            <button
+              type="button"
+              className="primaryWide"
+              onClick={handle3DMulti}
+              disabled={!current || building3d}
+              title="周辺の複数Street View地点を集め、DA3マルチビューで整合した高精度メッシュを作ります"
+            >
+              {building3d ? "生成中..." : "★ 高精度3D化（マルチビュー）"}
+            </button>
+          )}
+
           <div className="grid2 row2">
             <button
               type="button"
               onClick={handle3D}
               disabled={!current || building3d}
             >
-              {building3d ? "3D化中..." : "この地点を3D化"}
+              {building3d ? "3D化中..." : "この地点を3D化（簡易）"}
             </button>
             <button
               type="button"
@@ -423,6 +547,227 @@ export default function Home() {
                 モデルを変えると初回のみロードで時間がかかります。near/far は距離レンジ、
                 不連続しきい値を上げると面が繋がりやすく（小さいと境界で分断）。
               </p>
+
+              {config?.multiview_available && (
+                <>
+                  <h2 className="settingsHead">★ 高精度3D化（マルチビュー）</h2>
+                  <label className="field">
+                    深度モデル（カメラ対応必須）
+                    <input
+                      type="text"
+                      list="mvModels"
+                      value={multi.depthModel}
+                      onChange={(e) => setMultiParam("depthModel", e.target.value)}
+                      disabled={building3d}
+                    />
+                    <datalist id="mvModels">
+                      {(config?.multiview_model_presets ?? []).map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </datalist>
+                  </label>
+                  <div className="grid2">
+                    <label className="field">
+                      地点数 (1–8)
+                      <input
+                        type="number"
+                        min={1}
+                        max={8}
+                        step={1}
+                        value={multi.maxViews}
+                        onChange={(e) =>
+                          setMultiParam("maxViews", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      方向数 (2–8)
+                      <input
+                        type="number"
+                        min={2}
+                        max={8}
+                        step={1}
+                        value={multi.headingCount}
+                        onChange={(e) =>
+                          setMultiParam("headingCount", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      収集半径 (m)
+                      <input
+                        type="number"
+                        min={3}
+                        max={40}
+                        step={1}
+                        value={multi.radiusM}
+                        onChange={(e) =>
+                          setMultiParam("radiusM", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      信頼度カット (%)
+                      <input
+                        type="number"
+                        min={0}
+                        max={95}
+                        step={5}
+                        value={multi.confPercentile}
+                        onChange={(e) =>
+                          setMultiParam("confPercentile", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      信頼度上限クランプ (%)
+                      <input
+                        type="number"
+                        min={50}
+                        max={100}
+                        step={5}
+                        value={multi.ensurePercentile}
+                        onChange={(e) =>
+                          setMultiParam("ensurePercentile", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      遠方クリップ (m)
+                      <input
+                        type="number"
+                        min={5}
+                        max={200}
+                        step={5}
+                        value={multi.farClipM}
+                        onChange={(e) =>
+                          setMultiParam("farClipM", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      頭上クリップ (m)
+                      <input
+                        type="number"
+                        min={2}
+                        max={50}
+                        step={1}
+                        value={multi.heightClipM}
+                        onChange={(e) =>
+                          setMultiParam("heightClipM", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      処理解像度 (168–1008)
+                      <input
+                        type="number"
+                        min={168}
+                        max={1008}
+                        step={28}
+                        value={multi.processRes}
+                        onChange={(e) =>
+                          setMultiParam("processRes", Number(e.target.value))
+                        }
+                        disabled={building3d}
+                      />
+                    </label>
+                    <label className="field">
+                      リサイズ方式
+                      <select
+                        value={multi.processResMethod}
+                        onChange={(e) =>
+                          setMultiParam("processResMethod", e.target.value)
+                        }
+                        disabled={building3d}
+                      >
+                        {(config?.multiview_process_res_methods ?? []).map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      参照ビュー戦略
+                      <select
+                        value={multi.refViewStrategy}
+                        onChange={(e) =>
+                          setMultiParam("refViewStrategy", e.target.value)
+                        }
+                        disabled={building3d}
+                      >
+                        {(config?.multiview_ref_view_strategies ?? []).map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="grid2">
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
+                        checked={multi.useRayPose}
+                        onChange={(e) =>
+                          setMultiParam("useRayPose", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      レイベースのポーズ推定
+                    </label>
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
+                        checked={multi.dropSky}
+                        onChange={(e) =>
+                          setMultiParam("dropSky", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      空（オブジェクト判定）を除去
+                    </label>
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
+                        checked={multi.filterBlackBg}
+                        onChange={(e) =>
+                          setMultiParam("filterBlackBg", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      黒背景を除去
+                    </label>
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
+                        checked={multi.filterWhiteBg}
+                        onChange={(e) =>
+                          setMultiParam("filterWhiteBg", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      白背景を除去
+                    </label>
+                  </div>
+                  <p className="hint">
+                    地点数×方向数 の画像をDA3に一括投入して整合。<b>空除去</b>は DA3 の
+                    物体判定（sky マスク）でぐちゃぐちゃの主因を根元から除去します。
+                    <b>レイベースのポーズ推定</b>は各画素レイから RANSAC でカメラを解く別法。
+                    信頼度カット（下限）と上限クランプの間で適応しきい値が決まります。
+                  </p>
+                </>
+              )}
             </div>
           )}
 

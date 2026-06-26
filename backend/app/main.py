@@ -27,9 +27,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from . import depth, storage
+from . import depth, depth_da3, storage
 from .depth import _select_device, active_backend, estimate_depth
 from .panorama import build_panorama
+from .reconstruct_da3 import build_multiview_pointcloud
 from .reconstruct import (
     DEFAULT_FOV_DEG,
     DISCONTINUITY_RATIO,
@@ -44,7 +45,12 @@ from .route import (
     snap_route_points,
 )
 from .equirect import build_equirectangular
-from .streetview import fetch_streetview, fetch_streetview_panorama
+from .streetview import (
+    fetch_streetview,
+    fetch_streetview_panorama,
+    gather_nearby_viewpoints,
+    sample_viewpoint_images,
+)
 from .tour import MAX_TOUR_NODES, build_tour
 
 MAX_PANORAMA_VIEWS = 16
@@ -184,6 +190,43 @@ def config():
             "max_width": PANORAMA_MAX_WIDTH,
             "num_views": 8,
         },
+        # 高精度3D化（DA3 マルチビュー）。カメラポーズ対応モデルが必要。
+        "multiview_available": active_backend() == "da3",
+        "multiview_default_model": depth_da3.DA3_MULTIVIEW_MODEL_ID,
+        "multiview_model_presets": [
+            {"id": "depth-anything/DA3-LARGE", "label": "DA3 Large（推奨・カメラ対応）"},
+            {"id": "depth-anything/DA3-BASE", "label": "DA3 Base（軽い）"},
+            {"id": "depth-anything/DA3-GIANT", "label": "DA3 Giant（最高品質・重い）"},
+        ],
+        "multiview_defaults": {
+            "max_views": 4,
+            "heading_count": 6,
+            "radius_m": 12.0,
+            "fov": 90.0,
+            "max_width": 400,
+            "conf_percentile": 40.0,
+            "ensure_percentile": 90.0,
+            "far_clip_m": 35.0,
+            "height_clip_m": 9.0,
+            "process_res": 504,
+            "process_res_method": "upper_bound_resize",
+            "use_ray_pose": False,
+            "ref_view_strategy": "saddle_balanced",
+            "drop_sky": True,
+            "filter_black_bg": False,
+            "filter_white_bg": False,
+        },
+        "multiview_ref_view_strategies": [
+            {"id": "saddle_balanced", "label": "saddle_balanced（推奨・バランス）"},
+            {"id": "saddle_sim_range", "label": "saddle_sim_range（類似範囲）"},
+            {"id": "first", "label": "first（先頭ビュー基準）"},
+            {"id": "middle", "label": "middle（中央ビュー基準）"},
+        ],
+        "multiview_process_res_methods": [
+            {"id": "upper_bound_resize", "label": "低解像（軽い・既定）"},
+            {"id": "lower_bound_resize", "label": "高解像（精細・重い）"},
+            {"id": "upper_bound_crop", "label": "クロップ"},
+        ],
     }
 
 
@@ -347,6 +390,160 @@ def reconstruct_progress(job_id: str):
         if job is None:
             raise HTTPException(status_code=404, detail="ジョブが見つかりません")
         return dict(job)
+
+
+def _run_multiview_job(jid, lat, lng, params, api_key):
+    """DA3 マルチビューで整合メッシュを作るジョブ本体（別スレッド）。"""
+    progress = _job_progress(jid)
+    try:
+        # 1. 近接視点を収集し各視点から透視画像をサンプル（フェーズ: street_view）
+        progress("street_view", 0, 1, "周辺の Street View 地点を収集中 ...")
+        viewpoints = gather_nearby_viewpoints(
+            lat, lng,
+            radius_m=params["radius_m"],
+            max_views=params["max_views"],
+            api_key=api_key,
+        )
+        if not viewpoints:
+            raise ValueError("この付近に Street View が見つかりませんでした")
+        hc = params["heading_count"]
+        headings = [i * 360.0 / hc for i in range(hc)]
+        total_imgs = len(viewpoints) * hc
+        images = []
+        view_index = []
+        for vi, vp in enumerate(viewpoints):
+            for h in headings:
+                done = len(images)
+                progress("street_view", done, total_imgs,
+                         f"Street View 取得 {done + 1}/{total_imgs}（{len(viewpoints)}地点）")
+                image, _ = fetch_streetview(
+                    vp["lat"], vp["lng"], heading=h, pitch=params["pitch"],
+                    fov=params["fov"], api_key=api_key, pano=vp.get("pano_id"),
+                )
+                images.append(image)
+                view_index.append(vi)
+        progress("street_view", total_imgs, total_imgs,
+                 f"{len(viewpoints)}地点×{hc}方向 を取得")
+
+        # 2. DA3 マルチビュー推論（フェーズ: depth）。推論は直列化。
+        with _infer_lock:
+            progress("depth", 0, 1,
+                     f"DA3 マルチビュー推論中（{total_imgs}枚・モデルロード含む）...")
+            pred = depth_da3.infer_multiview(
+                images,
+                model_id=params["depth_model"],
+                process_res=params["process_res"],
+                process_res_method=params["process_res_method"],
+                use_ray_pose=params["use_ray_pose"],
+                ref_view_strategy=params["ref_view_strategy"],
+            )
+            progress("depth", 1, 1,
+                     "深度＋カメラポーズ推定 完了"
+                     + ("（レイベース）" if params["use_ray_pose"] else ""))
+
+            # 3. 整合点群の構築（フェーズ: mesh）。DA3 公式と同じく面は張らない。
+            scene, info = build_multiview_pointcloud(
+                pred, view_index, viewpoints,
+                max_width=params["max_width"],
+                conf_percentile=params["conf_percentile"],
+                ensure_percentile=params["ensure_percentile"],
+                drop_sky=params["drop_sky"],
+                filter_black_bg=params["filter_black_bg"],
+                filter_white_bg=params["filter_white_bg"],
+                far_clip_m=params["far_clip_m"],
+                height_clip_m=params["height_clip_m"],
+                progress=progress,
+            )
+
+        # 4. 保存（フェーズ: save）
+        progress("save", 0, 1, "glb を保存中 ...")
+        sid = storage.new_scene_id()
+        meta = {
+            "id": sid,
+            "source": "streetview_multiview",
+            "created_at": _now_iso(),
+            "location": {
+                "lat": lat, "lng": lng,
+                "viewpoints": [
+                    {"lat": v["lat"], "lng": v["lng"]} for v in viewpoints
+                ],
+            },
+            "depth_backend": active_backend(),
+            "depth_model": params["depth_model"] or depth_da3.DA3_MULTIVIEW_MODEL_ID,
+            **info,
+        }
+        storage.save_scene(scene, meta)
+        meta["glb_url"] = f"/scenes/{sid}/scene.glb"
+        progress("save", 1, 1, "完了")
+        _update_job(
+            jid, status="done", percent=100, phase="done",
+            message=f"高精度3D化 完了: {meta.get('vertex_count', '?')} 頂点 / "
+                    f"{info.get('viewpoints')}地点",
+            result=meta,
+        )
+    except ValueError as exc:
+        _update_job(jid, status="error", error=str(exc), message=f"失敗: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        _update_job(jid, status="error", error=str(exc),
+                    message=f"高精度3D化に失敗しました: {exc}")
+
+
+@app.post("/api/reconstruct/multiview")
+def reconstruct_multiview(
+    lat: float = Form(...),
+    lng: float = Form(...),
+    max_views: int = Form(4),
+    heading_count: int = Form(6),
+    radius_m: float = Form(12.0),
+    pitch: float = Form(0.0),
+    fov: float = Form(90.0),
+    max_width: int = Form(400),
+    conf_percentile: float = Form(40.0),
+    ensure_percentile: float = Form(90.0),
+    far_clip_m: float = Form(35.0),
+    height_clip_m: float = Form(9.0),
+    process_res: int = Form(504),
+    process_res_method: str = Form("upper_bound_resize"),
+    use_ray_pose: bool = Form(False),
+    ref_view_strategy: str = Form("saddle_balanced"),
+    drop_sky: bool = Form(True),
+    filter_black_bg: bool = Form(False),
+    filter_white_bg: bool = Form(False),
+    depth_model: str | None = Form(None),
+    api_key: str | None = Form(None),
+):
+    """周辺の複数 Street View 地点を集め、DA3 マルチビューで整合した歩ける点群を作る。
+
+    ジョブを開始して即 {job_id} を返す。進捗は /api/reconstruct/progress/{job_id}。
+    """
+    rvs = ref_view_strategy if ref_view_strategy in depth_da3.REF_VIEW_STRATEGIES else "saddle_balanced"
+    prm = process_res_method if process_res_method in depth_da3.PROCESS_RES_METHODS else "upper_bound_resize"
+    params = {
+        "max_views": max(1, min(8, max_views)),
+        "heading_count": max(2, min(8, heading_count)),
+        "radius_m": max(3.0, min(40.0, float(radius_m))),
+        "pitch": float(pitch),
+        "fov": max(60.0, min(120.0, float(fov))),
+        "max_width": int(max(64, min(504, max_width))),
+        "conf_percentile": max(0.0, min(95.0, float(conf_percentile))),
+        "ensure_percentile": max(50.0, min(100.0, float(ensure_percentile))),
+        "far_clip_m": max(5.0, min(200.0, float(far_clip_m))),
+        "height_clip_m": max(2.0, min(50.0, float(height_clip_m))),
+        "process_res": int(max(168, min(1008, process_res))),
+        "process_res_method": prm,
+        "use_ray_pose": bool(use_ray_pose),
+        "ref_view_strategy": rvs,
+        "drop_sky": bool(drop_sky),
+        "filter_black_bg": bool(filter_black_bg),
+        "filter_white_bg": bool(filter_white_bg),
+        "depth_model": (depth_model or "").strip() or None,
+    }
+    jid = _new_job()
+    thread = threading.Thread(
+        target=_run_multiview_job, args=(jid, lat, lng, params, api_key), daemon=True
+    )
+    thread.start()
+    return {"job_id": jid}
 
 
 @app.post("/api/reconstruct/route")

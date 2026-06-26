@@ -424,8 +424,8 @@ def build_multiview_pointcloud(
     height_clip_m: float = 9.0,
     max_points: int = 600000,
     mesh: bool = False,
-    discontinuity_ratio: float = 0.08,
-    edge_factor: float = 0.4,  # 「最長辺÷深度」の上限。超えたらスパイクとして除去（0で無効）
+    discontinuity_ratio: float = 0.15,
+    edge_factor: float = 0.7,  # 「最長辺÷深度」の上限。超えたらスパイクとして除去（0で無効）
     max_faces: int = 1_200_000,
     level_ground: bool = True,
     drop_small: bool = True,

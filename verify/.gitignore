@@ -1,4 +1,4 @@
 node_modules/
-out/
+out*/
 gallery_*/
 index.html

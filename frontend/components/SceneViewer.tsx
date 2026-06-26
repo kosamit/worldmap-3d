@@ -329,6 +329,12 @@ export default function SceneViewer({
   const coordsRef = useRef<HTMLDivElement | null>(null);
   const colliderRef = useRef<THREE.Mesh[]>([]);
 
+  // シーン(GLB)が変わったら古い当たり判定を捨てる。新しい Model の onReady が
+  // 入るまで Player のスポーンを待たせ、前回シーンの床に着地する誤動作を防ぐ。
+  useEffect(() => {
+    colliderRef.current = [];
+  }, [glbUrl]);
+
   return (
     <div id="walk-area" className="canvasWrap">
       <Canvas
@@ -346,7 +352,9 @@ export default function SceneViewer({
             />
           )}
         </Suspense>
+        {/* glbUrl ごとに Player を作り直し、カメラのスポーン状態/向きをリセット */}
         <Player
+          key={glbUrl ?? "none"}
           onLockChange={setLocked}
           coordsRef={coordsRef}
           colliderRef={colliderRef}

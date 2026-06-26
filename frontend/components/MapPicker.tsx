@@ -12,12 +12,13 @@ import {
   useMap,
   useMapsLibrary,
 } from "@vis.gl/react-google-maps";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { LatLng } from "@/lib/geo";
 
 interface MapPickerProps {
   apiKey: string;
   current: LatLng | null;
+  facing?: number; // 現在向いている方位（度, 0=北, 時計回り）
   onPick: (point: LatLng) => void;
   onReady?: () => void;
 }
@@ -57,11 +58,26 @@ function SearchBox() {
 
 function PickerInner({
   current,
+  facing = 0,
   onPick,
   onReady,
 }: Omit<MapPickerProps, "apiKey">) {
   const map = useMap();
   const apiLoaded = useApiIsLoaded();
+
+  // 現在地ピン＝向きを示す矢印。facing(度, 0=北) で時計回りに回転。
+  const icon = useMemo(() => {
+    if (!apiLoaded || typeof google === "undefined") return undefined;
+    return {
+      path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+      scale: 6,
+      rotation: facing,
+      fillColor: "#2f6fed",
+      fillOpacity: 1,
+      strokeColor: "#ffffff",
+      strokeWeight: 1.5,
+    } as google.maps.Symbol;
+  }, [apiLoaded, facing]);
 
   useEffect(() => {
     if (apiLoaded) onReady?.();
@@ -79,7 +95,7 @@ function PickerInner({
     return () => listener.remove();
   }, [map, onPick]);
 
-  return current ? <Marker position={current} /> : null;
+  return current ? <Marker position={current} icon={icon} /> : null;
 }
 
 export default function MapPicker({ apiKey, ...rest }: MapPickerProps) {

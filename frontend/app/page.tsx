@@ -31,6 +31,8 @@ export default function Home() {
   const [status, setStatus] = useState("準備完了");
   const [statusError, setStatusError] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 地図ピンの向き表示用（整数度に丸めて再描画を抑える）。
+  const [facingDeg, setFacingDeg] = useState(0);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -154,6 +156,10 @@ export default function Home() {
 
   const handleFacingChange = useCallback((bearing: number) => {
     facingRef.current = bearing;
+    setFacingDeg((prev) => {
+      const rounded = Math.round(bearing);
+      return rounded === prev ? prev : rounded;
+    });
   }, []);
 
   const mapPoint: LatLng | null = current
@@ -181,6 +187,7 @@ export default function Home() {
               <MapPicker
                 apiKey={config.maps_api_key}
                 current={mapPoint}
+                facing={facingDeg}
                 onPick={handlePick}
                 onReady={onMapsReady}
               />

@@ -4,9 +4,11 @@ API キーは環境変数 GOOGLE_MAPS_API_KEY、または呼び出し時の引�
 利用は Google Maps Platform の利用規約に従うこと。
 """
 
+import hashlib
 import io
 import math
 import os
+from pathlib import Path
 
 import requests
 from PIL import Image
@@ -15,6 +17,17 @@ STREETVIEW_URL = "https://maps.googleapis.com/maps/api/streetview"
 METADATA_URL = "https://maps.googleapis.com/maps/api/streetview/metadata"
 DEFAULT_SIZE = "640x640"
 DEFAULT_SNAP_RADIUS_M = 50
+
+# 取得済み画像のディスクキャッシュ（API課金を減らす）。同じパノラマ/方位/画角は再利用。
+# 無効化したいときは環境変数 SV_CACHE=0。
+_SV_CACHE_ENABLED = os.environ.get("SV_CACHE", "1") != "0"
+_SV_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "sv_cache"
+
+
+def _sv_cache_path(pano, lat, lng, heading, pitch, fov, size) -> Path:
+    base = f"pano={pano}" if pano else f"loc={lat:.6f},{lng:.6f}"
+    key = f"{base}|h={heading}|p={pitch}|fov={fov}|s={size}"
+    return _SV_CACHE_DIR / (hashlib.sha1(key.encode()).hexdigest() + ".jpg")
 
 
 def fetch_streetview(
@@ -30,39 +43,55 @@ def fetch_streetview(
     """(PIL.Image RGB, 使用した fov) を返す。失敗時は ValueError。
 
     pano を指定すると座標ではなくパノラマ ID で取得する（隣接ノードを正確に取得）。
+    取得済み画像はディスクにキャッシュし、同条件の再取得を避けて API 課金を抑える。
     """
-    api_key = api_key or os.environ.get("GOOGLE_MAPS_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "Google Maps API キーが必要です (環境変数 GOOGLE_MAPS_API_KEY か api_key 引数)"
-        )
+    cpath = _sv_cache_path(pano, lat, lng, heading, pitch, fov, size)
+    content: bytes | None = None
+    if _SV_CACHE_ENABLED and cpath.exists():
+        try:
+            content = cpath.read_bytes()
+        except Exception:  # noqa: BLE001 - 壊れていたら取り直す
+            content = None
 
-    params = {
-        "size": size,
-        "heading": heading,
-        "pitch": pitch,
-        "fov": fov,
-        "key": api_key,
-        "return_error_code": "true",
-    }
-    if pano:
-        params["pano"] = pano
-    else:
-        params["location"] = f"{lat},{lng}"
-    resp = requests.get(STREETVIEW_URL, params=params, timeout=20)
-    if resp.status_code == 404:
-        raise ValueError(
-            "指定地点に Street View 画像が見つかりません（座標を変えるか heading を調整してください）"
-        )
-    if resp.status_code == 403:
-        raise ValueError(
-            "Street View API に拒否されました（API キーの制限・有効化状態を確認してください）"
-        )
-    if resp.status_code != 200:
-        raise ValueError(f"Street View API エラー {resp.status_code}")
+    if content is None:
+        api_key = api_key or os.environ.get("GOOGLE_MAPS_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "Google Maps API キーが必要です (環境変数 GOOGLE_MAPS_API_KEY か api_key 引数)"
+            )
+        params = {
+            "size": size,
+            "heading": heading,
+            "pitch": pitch,
+            "fov": fov,
+            "key": api_key,
+            "return_error_code": "true",
+        }
+        if pano:
+            params["pano"] = pano
+        else:
+            params["location"] = f"{lat},{lng}"
+        resp = requests.get(STREETVIEW_URL, params=params, timeout=20)
+        if resp.status_code == 404:
+            raise ValueError(
+                "指定地点に Street View 画像が見つかりません（座標を変えるか heading を調整してください）"
+            )
+        if resp.status_code == 403:
+            raise ValueError(
+                "Street View API に拒否されました（API キーの制限・有効化状態を確認してください）"
+            )
+        if resp.status_code != 200:
+            raise ValueError(f"Street View API エラー {resp.status_code}")
+        content = resp.content
+        if _SV_CACHE_ENABLED:
+            try:
+                _SV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                cpath.write_bytes(content)
+            except Exception:  # noqa: BLE001 - キャッシュ書き込み失敗は致命的でない
+                pass
 
     try:
-        image = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        image = Image.open(io.BytesIO(content)).convert("RGB")
     except Exception as exc:  # noqa: BLE001 - 外部レスポンスの破損を明示的に握る
         raise ValueError(f"Street View 画像のデコードに失敗: {exc}") from exc
 

@@ -106,6 +106,26 @@ export function glbUrl(base: string, meta: SceneMeta): string {
   return `${normalizeBase(base)}${meta.glb_url}`;
 }
 
+export async function reconstructPanorama(
+  base: string,
+  params: { lat: number; lng: number; numViews?: number; fov?: number },
+): Promise<SceneMeta> {
+  const form = new FormData();
+  form.append("lat", String(params.lat));
+  form.append("lng", String(params.lng));
+  form.append("num_views", String(params.numViews ?? 8));
+  form.append("fov", String(params.fov ?? 90));
+  const res = await fetch(`${normalizeBase(base)}/api/reconstruct/panorama`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(`3D化に失敗 (${res.status}): ${detail}`);
+  }
+  return res.json();
+}
+
 export async function fetchPano(
   base: string,
   params: { panoId: string; outWidth?: number },

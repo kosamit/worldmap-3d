@@ -5,10 +5,13 @@ import {
   DEFAULT_BACKEND,
   fetchConfig,
   fetchPano,
+  glbUrl,
+  reconstructPanorama,
   type AppConfig,
 } from "@/lib/api";
 import type { LatLng } from "@/lib/geo";
 import TourViewer, { type PanoLink } from "@/components/TourViewer";
+import SceneViewer from "@/components/SceneViewer";
 import MapPicker from "@/components/MapPicker";
 
 interface PanoState {
@@ -33,6 +36,10 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   // 地図ピンの向き表示用（整数度に丸めて再描画を抑える）。
   const [facingDeg, setFacingDeg] = useState(0);
+  // 表示モード: パノラマ写真 or 深度メッシュ(3D化)
+  const [mode, setMode] = useState<"pano" | "mesh">("pano");
+  const [meshGlb, setMeshGlb] = useState<string | null>(null);
+  const [building3d, setBuilding3d] = useState(false);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -162,6 +169,29 @@ export default function Home() {
     });
   }, []);
 
+  // 今いる地点を深度推定で立体メッシュ化し、歩ける3Dモデルに切り替える。
+  const handle3D = useCallback(async () => {
+    if (!current) {
+      say("先に地図で地点を選んでください", true);
+      return;
+    }
+    setBuilding3d(true);
+    say("この地点を3D化中（深度推定、数十秒〜）...");
+    try {
+      const meta = await reconstructPanorama(backend, {
+        lat: current.lat,
+        lng: current.lng,
+      });
+      setMeshGlb(glbUrl(backend, meta));
+      setMode("mesh");
+      say(`3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
+    } catch (err) {
+      say((err as Error).message, true);
+    } finally {
+      setBuilding3d(false);
+    }
+  }, [current, backend, say]);
+
   const mapPoint: LatLng | null = current
     ? { lat: current.lat, lng: current.lng }
     : null;
@@ -202,23 +232,48 @@ export default function Home() {
             そこから<strong>両隣</strong>の Street View を都度たどって歩けます。
             {busy && " （取得中…）"}
           </p>
+
+          <div className="grid2 row2">
+            <button
+              type="button"
+              onClick={handle3D}
+              disabled={!current || building3d}
+            >
+              {building3d ? "3D化中..." : "この地点を3D化"}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setMode("pano")}
+              disabled={mode === "pano"}
+            >
+              パノラマに戻る
+            </button>
+          </div>
+          <p className="hint">
+            「3D化」は今いる地点を深度推定で立体メッシュ化し、WASDで歩けます。
+          </p>
         </section>
 
         <p className={statusError ? "status error" : "status"}>{status}</p>
       </aside>
 
       <main className="main">
-        {mounted && (
-          <TourViewer
-            base={backend}
-            equirect={equirect}
-            links={current?.links ?? []}
-            canBack={history.length > 0}
-            onForward={handleForward}
-            onBack={handleBack}
-            onStepLink={handleStepLink}
-            onFacingChange={handleFacingChange}
-          />
+        {mounted && mode === "mesh" ? (
+          <SceneViewer glbUrl={meshGlb} />
+        ) : (
+          mounted && (
+            <TourViewer
+              base={backend}
+              equirect={equirect}
+              links={current?.links ?? []}
+              canBack={history.length > 0}
+              onForward={handleForward}
+              onBack={handleBack}
+              onStepLink={handleStepLink}
+              onFacingChange={handleFacingChange}
+            />
+          )
         )}
       </main>
     </div>

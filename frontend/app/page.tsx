@@ -426,7 +426,18 @@ export default function Home() {
       setSceneHeadingDeg(facingRef.current);
       setMeshGlb(glbUrl(backend, meta));
       setMode("mesh");
-      say(`高精度3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
+      {
+        const vp = meta.viewpoints ?? "?";
+        const cap =
+          meta.views_capped && meta.requested_views
+            ? `（要求${meta.requested_views}→自動制限）`
+            : "";
+        say(
+          `高精度3D化完了: ${vp}地点${cap} / ${meta.images_used ?? "?"}枚 / ${
+            meta.vertex_count ?? "?"
+          }頂点。WASDで歩けます`,
+        );
+      }
     } catch (err) {
       say((err as Error).message, true);
     } finally {
@@ -856,6 +867,23 @@ export default function Home() {
                       白背景を除去
                     </label>
                   </div>
+                  {(() => {
+                    const MAX_IMG = 80; // バックエンドの自動制限と一致
+                    const perVp = multi.headingCount * multi.pitchCount;
+                    const budgetViews = Math.max(1, Math.floor(MAX_IMG / perVp));
+                    const effViews = Math.min(multi.maxViews, budgetViews);
+                    const capped = effViews < multi.maxViews;
+                    return (
+                      <p className={capped ? "hint warn" : "hint"}>
+                        予定: <b>{effViews}地点</b> × {multi.headingCount}方向 ×{" "}
+                        {multi.pitchCount}段 = <b>{effViews * perVp}枚</b>
+                        {capped
+                          ? ` ／ ⚠️ 地点数${multi.maxViews}は上限${MAX_IMG}枚を超えるため自動で${effViews}地点に制限されます`
+                          : ` （上限${MAX_IMG}枚）`}
+                        。実際の地点数は周辺のStreet View数により更に少なくなることがあります。
+                      </p>
+                    );
+                  })()}
                   <p className="hint">
                     地点数×方向数×上下段数 の画像をDA3に一括投入して整合。<b>地点数=1</b>なら
                     今いる1地点の全周だけで作ります（最もキレイ）。<b>上下の段数</b>は天地の抜けを

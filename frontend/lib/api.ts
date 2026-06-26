@@ -96,6 +96,10 @@ export interface SceneMeta {
   location?: SceneLocation | null;
   vertex_count?: number;
   points?: number;
+  viewpoints?: number;
+  requested_views?: number;
+  views_capped?: boolean;
+  images_used?: number;
 }
 
 export interface RouteParams {

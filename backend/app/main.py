@@ -56,6 +56,9 @@ from .tour import MAX_TOUR_NODES, build_tour
 MAX_PANORAMA_VIEWS = 16
 # パノラマは視点数ぶん連結するため、1 視点あたりの解像度を下げて総頂点数を抑える。
 PANORAMA_MAX_WIDTH = 256
+# マルチビュー1回でDA3に入れる総画像枚数の上限（GPUメモリ予算）。
+# 実測: 72枚(process_res=504)でピーク約12GB。16GB級GPUで安全な枠として 80。
+MAX_MULTIVIEW_IMAGES = 80
 
 # 3D化ジョブの進捗管理（プロセス内メモリ）。フロントがポーリングして進捗を表示する。
 _jobs: dict[str, dict] = {}
@@ -418,18 +421,29 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
     try:
         # 1. 近接視点を収集し各視点から透視画像をサンプル（フェーズ: street_view）
         progress("street_view", 0, 1, "周辺の Street View 地点を収集中 ...")
+        hc = params["heading_count"]
+        headings = [i * 360.0 / hc for i in range(hc)]
+        pitches = _pitch_rows(params["pitch_count"])  # 上下方向の段（天地を埋める）
+
+        # 自動制限：総画像枚数(地点数×方向数×段数)が GPU 予算を超えないよう地点数を抑える。
+        per_vp = hc * len(pitches)
+        budget_views = max(1, MAX_MULTIVIEW_IMAGES // per_vp)
+        eff_max_views = min(params["max_views"], budget_views)
+        capped = eff_max_views < params["max_views"]
+        if capped:
+            progress("street_view", 0, 1,
+                     f"自動制限: 1地点あたり{per_vp}枚なので地点数を "
+                     f"{params['max_views']}→{eff_max_views} に抑制（上限{MAX_MULTIVIEW_IMAGES}枚）")
+
         viewpoints = gather_nearby_viewpoints(
             lat, lng,
             radius_m=params["radius_m"],
-            max_views=params["max_views"],
+            max_views=eff_max_views,
             api_key=api_key,
         )
         if not viewpoints:
             raise ValueError("この付近に Street View が見つかりませんでした")
-        hc = params["heading_count"]
-        headings = [i * 360.0 / hc for i in range(hc)]
-        pitches = _pitch_rows(params["pitch_count"])  # 上下方向の段（天地を埋める）
-        total_imgs = len(viewpoints) * hc * len(pitches)
+        total_imgs = len(viewpoints) * per_vp
         images = []
         view_index = []
         for vi, vp in enumerate(viewpoints):
@@ -494,15 +508,23 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
             },
             "depth_backend": active_backend(),
             "depth_model": params["depth_model"] or depth_da3.DA3_MULTIVIEW_MODEL_ID,
+            "requested_views": int(params["max_views"]),
+            "views_capped": bool(capped),
+            "images_used": int(total_imgs),
             **info,
         }
         storage.save_scene(scene, meta)
         meta["glb_url"] = f"/scenes/{sid}/scene.glb"
         progress("save", 1, 1, "完了")
+        cap_note = (
+            f"（要求{params['max_views']}→自動制限{len(viewpoints)}）" if capped
+            else (f"（要求{params['max_views']}, 周辺で{len(viewpoints)}見つかった）"
+                  if len(viewpoints) < params["max_views"] else "")
+        )
         _update_job(
             jid, status="done", percent=100, phase="done",
-            message=f"高精度3D化 完了: {meta.get('vertex_count', '?')} 頂点 / "
-                    f"{info.get('viewpoints')}地点",
+            message=f"高精度3D化 完了: {info.get('viewpoints')}地点{cap_note} / "
+                    f"{total_imgs}枚 / {meta.get('vertex_count', '?')}頂点",
             result=meta,
         )
     except ValueError as exc:

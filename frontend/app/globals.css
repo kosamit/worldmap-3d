@@ -210,6 +210,10 @@ body {
   line-height: 1.5;
 }
 
+.hint.warn {
+  color: #b26b00;
+}
+
 .status {
   margin-top: 18px;
   font-size: 0.82rem;

@@ -1,0 +1,13 @@
+{
+  "name": "worldmap-verify",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright で 3D化 を実行し、生成メッシュのターンテーブルGIFと summary.json を残す検証ハーネス",
+  "scripts": {
+    "verify": "node verify3d.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}

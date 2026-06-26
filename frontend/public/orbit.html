@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>html,body{margin:0;height:100%;background:#aac4d8;overflow:hidden}#c{width:100vw;height:100vh;display:block}</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const qs = new URLSearchParams(location.search);
+const glb = qs.get("glb");
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById("c"), antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xaac4d8);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 5000);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.4));
+const dir = new THREE.DirectionalLight(0xffffff, 1.0); dir.position.set(1, 2, 1); scene.add(dir);
+
+let center = new THREE.Vector3(), radius = 10;
+window.ready = false;
+
+new GLTFLoader().load(glb, (gltf) => {
+  scene.add(gltf.scene);
+  // 中心と「核」半径を、外れ値(遠方の空など)に強い分位点で求める。
+  let cx = 0, cy = 0, cz = 0, n = 0;
+  const positions = [];
+  gltf.scene.updateWorldMatrix(true, true);
+  gltf.scene.traverse((o) => {
+    if (!o.geometry) return;
+    const p = o.geometry.attributes.position, m = o.matrixWorld, v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i += 7) { // 間引いて統計
+      v.fromBufferAttribute(p, i).applyMatrix4(m);
+      positions.push(v.x, v.y, v.z); cx += v.x; cy += v.y; cz += v.z; n++;
+    }
+  });
+  center.set(cx / n, cy / n, cz / n);
+  const d = [];
+  for (let i = 0; i < positions.length; i += 3) {
+    const dx = positions[i] - center.x, dy = positions[i + 1] - center.y, dz = positions[i + 2] - center.z;
+    d.push(Math.hypot(dx, dy, dz));
+  }
+  d.sort((a, b) => a - b);
+  radius = d[Math.floor(d.length * 0.75)] || 10; // 75パーセンタイル=核
+  window.radius = radius;
+  window.vertexCount = (() => { let n = 0; gltf.scene.traverse((o) => { if (o.geometry) n += o.geometry.attributes.position.count; }); return n; })();
+  setView(0, 18, 1.1);
+  window.ready = true;
+}, undefined, (e) => { window.loadError = String(e); });
+
+window.setView = (azDeg, elDeg, rFactor) => {
+  const az = azDeg * Math.PI / 180, el = elDeg * Math.PI / 180, r = radius * rFactor;
+  camera.position.set(
+    center.x + r * Math.cos(el) * Math.sin(az),
+    center.y + r * Math.sin(el),
+    center.z + r * Math.cos(el) * Math.cos(az)
+  );
+  camera.lookAt(center);
+  renderer.render(scene, camera);
+};
+</script>
+</body>
+</html>

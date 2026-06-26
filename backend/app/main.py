@@ -417,10 +417,17 @@ def _pitch_rows(pitch_count: int) -> list[float]:
 
 
 def _free_cuda() -> None:
-    """CUDA キャッシュを解放（OOM 後に次回以降の実行が巻き込まれないように）。"""
+    """CUDA メモリを解放（蓄積でGPUが飽和し、2回目以降が遅延/停止するのを防ぐ）。
+
+    empty_cache だけだと Python 参照が残るテンソルが解放されないため、先に
+    gc.collect() で回収してから空ける。
+    """
     try:
+        import gc
+
         import torch
 
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()

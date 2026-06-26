@@ -70,6 +70,7 @@ interface MultiParams {
   filterBlackBg: boolean;
   filterWhiteBg: boolean;
   anchorGps: boolean;
+  rawMode: boolean;
 }
 
 const FALLBACK_MULTI: MultiParams = {
@@ -94,6 +95,7 @@ const FALLBACK_MULTI: MultiParams = {
   filterBlackBg: false,
   filterWhiteBg: false,
   anchorGps: true,
+  rawMode: false,
 };
 
 // 現在地(lat,lng,向き)を URL に載せ、Google Maps のように共有・ブックマーク可能にする。
@@ -212,6 +214,7 @@ export default function Home() {
             filterBlackBg: m?.filter_black_bg ?? FALLBACK_MULTI.filterBlackBg,
             filterWhiteBg: m?.filter_white_bg ?? FALLBACK_MULTI.filterWhiteBg,
             anchorGps: m?.anchor_gps ?? FALLBACK_MULTI.anchorGps,
+            rawMode: m?.raw ?? FALLBACK_MULTI.rawMode,
           });
         }
         if (!cancelled && !cfg.has_maps_key) {
@@ -441,6 +444,7 @@ export default function Home() {
           filterBlackBg: multi.filterBlackBg,
           filterWhiteBg: multi.filterWhiteBg,
           anchorGps: multi.anchorGps,
+          rawMode: multi.rawMode,
           method,
           depthModel: multi.depthModel || null,
         },
@@ -913,6 +917,17 @@ export default function Home() {
                     </label>
                   </div>
                   <div className="grid2">
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
+                        checked={multi.rawMode}
+                        onChange={(e) =>
+                          setMultiParam("rawMode", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      生データ（全フィルタ無効）
+                    </label>
                     <label className="checkField">
                       <input
                         type="checkbox"

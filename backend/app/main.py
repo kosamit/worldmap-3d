@@ -231,6 +231,7 @@ def config():
             "filter_black_bg": False,
             "filter_white_bg": False,
             "anchor_gps": True,
+            "raw": False,
         },
         "multiview_ref_view_strategies": [
             {"id": "saddle_balanced", "label": "saddle_balanced（推奨・バランス）"},
@@ -583,6 +584,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                     height_clip_m=params["height_clip_m"],
                     edge_factor=params["edge_factor"],
                     discontinuity_ratio=params["discontinuity_ratio"],
+                    raw=params["raw"],
                     mesh=True,
                     progress=progress,
                 )
@@ -663,6 +665,7 @@ def reconstruct_multiview(
     filter_black_bg: bool = Form(False),
     filter_white_bg: bool = Form(False),
     anchor_gps: bool = Form(True),
+    raw: bool = Form(False),
     method: str = Form("mesh"),
     tsdf_voxel: float = Form(0.12),
     depth_model: str | None = Form(None),
@@ -696,6 +699,7 @@ def reconstruct_multiview(
         "filter_black_bg": bool(filter_black_bg),
         "filter_white_bg": bool(filter_white_bg),
         "anchor_gps": bool(anchor_gps),
+        "raw": bool(raw),
         "method": "tsdf" if method == "tsdf" else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,

@@ -429,6 +429,7 @@ def build_multiview_pointcloud(
     max_faces: int = 1_200_000,
     level_ground: bool = True,
     drop_small: bool = True,
+    raw: bool = False,
     progress=None,
 ):
     """DA3 マルチビュー予測から、視点間で整合した「点群」(trimesh.Scene)と info を返す。
@@ -462,6 +463,17 @@ def build_multiview_pointcloud(
       max_points:          最終点数の上限（超えたら間引き）。
     """
     progress = progress or _noop
+    # raw=True: クリップ・ノイズ除去・平滑化など全フィルタを無効化し、生の逆投影を出す。
+    if raw:
+        drop_sky = False
+        filter_black_bg = False
+        filter_white_bg = False
+        edge_factor = 0.0
+        discontinuity_ratio = 1e9  # 不連続カットを実質無効
+        level_ground = False
+        drop_small = False
+        far_clip_m = 0.0
+        height_clip_m = 0.0
     depth = prediction["depth"]
     conf = prediction.get("conf")
     sky = prediction.get("sky")  # (N,H,W) bool or None
@@ -495,9 +507,11 @@ def build_multiview_pointcloud(
     pix_v = vv.astype(np.float64).ravel()
 
     conf_thr = (
-        _adaptive_conf_thresh(conf, sky, conf_percentile, ensure_percentile, conf_thresh_base)
-        if conf is not None
-        else None
+        None if raw else (
+            _adaptive_conf_thresh(conf, sky, conf_percentile, ensure_percentile, conf_thresh_base)
+            if conf is not None
+            else None
+        )
     )
 
     # 各ビューの c2w（DA3 ワールド）と視点ごとの平均カメラ中心を先に求める。

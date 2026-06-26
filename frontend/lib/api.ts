@@ -40,6 +40,7 @@ export interface MultiviewDefaults {
   filter_black_bg: boolean;
   filter_white_bg: boolean;
   anchor_gps: boolean;
+  raw: boolean;
 }
 
 export interface AppConfig {
@@ -273,6 +274,7 @@ export interface MultiviewParams {
   filterBlackBg?: boolean;
   filterWhiteBg?: boolean;
   anchorGps?: boolean;
+  rawMode?: boolean;
   method?: "mesh" | "tsdf";
   tsdfVoxel?: number;
   depthModel?: string | null;
@@ -325,6 +327,7 @@ export async function reconstructMultiview(
     form.append("filter_white_bg", String(params.filterWhiteBg));
   if (params.anchorGps != null)
     form.append("anchor_gps", String(params.anchorGps));
+  if (params.rawMode != null) form.append("raw", String(params.rawMode));
   if (params.method) form.append("method", params.method);
   if (params.tsdfVoxel != null) form.append("tsdf_voxel", String(params.tsdfVoxel));
   if (params.depthModel) form.append("depth_model", params.depthModel);

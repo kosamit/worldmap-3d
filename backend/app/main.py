@@ -579,16 +579,16 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
             if params["method"] == "tsdf":
                 # TSDF 融合（open3d）。重なり層を1枚の連続面へ。ソリッドな歩ける空間。
                 from .reconstruct_experiments import build_tsdf_mesh
-                scene, info = build_tsdf_mesh(
-                    pred, view_index, viewpoints,
-                    voxel=params["tsdf_voxel"], progress=progress,
-                )
+                with _Heartbeat(progress, "mesh", "TSDF融合中", 8.0 + 0.4 * total_imgs):
+                    scene, info = build_tsdf_mesh(
+                        pred, view_index, viewpoints, voxel=params["tsdf_voxel"],
+                    )
             elif params["method"] == "poisson":
                 # Poisson 面再構成（open3d）。穴を水密面で塞ぐ＝柱の裏なども補間で埋める。
+                # 1回の長いブロッキング呼び出しなのでハートビートで「停止」誤認を防ぐ。
                 from .reconstruct_experiments import build_poisson_mesh
-                scene, info = build_poisson_mesh(
-                    pred, view_index, viewpoints, progress=progress,
-                )
+                with _Heartbeat(progress, "mesh", "Poisson面再構成中", 40.0):
+                    scene, info = build_poisson_mesh(pred, view_index, viewpoints)
             else:
                 # GPSアンカー配置で面を張る（既定）。
                 scene, info = build_multiview_pointcloud(

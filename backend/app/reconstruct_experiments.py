@@ -164,9 +164,12 @@ def build_tsdf_mesh(prediction, view_index, viewpoints, voxel: float = 0.06,
     return scene, info
 
 
-def build_poisson_mesh(prediction, view_index, viewpoints, depth_octree: int = 9,
+def build_poisson_mesh(prediction, view_index, viewpoints, depth_octree: int = 8,
                        density_quantile: float = 0.08, max_faces: int = 1_200_000, progress=None):
-    """クリーンな整合点群＋法線から Poisson 面再構成（滑らかな水密寄りの面）。"""
+    """クリーンな整合点群＋法線から Poisson 面再構成（滑らかな水密寄りの面）。
+
+    octree=8 で速度とディテールのバランス（9は重く停止に見えがち）。点数も抑える。
+    """
     import open3d as o3d
     from .reconstruct_da3 import _decimate_mesh, _noop
 
@@ -174,9 +177,9 @@ def build_poisson_mesh(prediction, view_index, viewpoints, depth_octree: int = 9
     progress("mesh", 0, 1, "Poisson: 点群生成中 ...")
     # 主経路の点群（GPSアンカー・空除去・水平化済み）を素材にする
     cloud_scene, _ = build_multiview_pointcloud(
-        prediction, view_index, viewpoints, max_width=400, conf_percentile=45.0,
+        prediction, view_index, viewpoints, max_width=320, conf_percentile=45.0,
         drop_sky=True, anchor_gps=True, mesh=False, far_clip_m=0.0, height_clip_m=40.0,
-        level_ground=True, max_points=800000)
+        level_ground=True, max_points=400000)
     g = list(cloud_scene.geometry.values())[0]
     pts = np.asarray(g.vertices, np.float64)
     cols = np.asarray(g.colors)[:, :3].astype(np.float64) / 255.0

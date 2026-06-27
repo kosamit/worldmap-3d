@@ -116,10 +116,41 @@ def _inpaint_equirect(color, radius, valid, use_lama=True):
     return filled_color, rf.reshape(radius.shape)
 
 
+def _eq_layer(color, radius, valid, scale, discontinuity):
+    """equirect の1レイヤー(カラー/半径/有効) → (verts, faces, rgba)。経度は wrap。"""
+    eq_h, eq_w2 = radius.shape
+    lon = (np.arange(eq_w2) / eq_w2 - 0.5) * 2 * np.pi
+    lat = (0.5 - np.arange(eq_h) / eq_h) * np.pi
+    LON, LAT = np.meshgrid(lon, lat)
+    dirs = np.stack([np.cos(LAT) * np.sin(LON), np.sin(LAT), np.cos(LAT) * np.cos(LON)], -1)
+    verts = (dirs * radius[..., None]).reshape(-1, 3) * scale
+
+    idx = np.arange(eq_h * eq_w2).reshape(eq_h, eq_w2)
+    j = np.arange(eq_w2); jr = (j + 1) % eq_w2
+    tl = idx[:-1, j].ravel(); tr = idx[:-1, jr].ravel()
+    bl = idx[1:, j].ravel(); br = idx[1:, jr].ravel()
+    rr = (radius * scale).ravel()
+    rq = np.stack([rr[tl], rr[tr], rr[bl], rr[br]], 1)
+    rmean = rq.mean(1) + 1e-9
+    cont = (rq.max(1) - rq.min(1)) / rmean < discontinuity
+    vflat = valid.ravel()
+    keep = cont & vflat[tl] & vflat[tr] & vflat[bl] & vflat[br]
+    faces = np.concatenate([np.stack([tl, bl, tr], 1)[keep],
+                            np.stack([tr, bl, br], 1)[keep]], 0)
+    rgba = np.concatenate([color.reshape(-1, 3), np.full((eq_h * eq_w2, 1), 255, np.uint8)], 1)
+    return verts.astype(np.float32), faces, rgba
+
+
 def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
-                        inpaint=True, discontinuity_ratio=0.5, edge_factor=0.7,
+                        inpaint=True, layered=True, discontinuity_ratio=0.5,
                         max_faces=1_200_000, progress=None):
-    """単一視点 equirect RGBD → 穴埋め → 隙間のない球面メッシュ(trimesh.Scene)。"""
+    """単一視点 equirect RGBD → 穴埋め＋レイヤード遮蔽補完 → 球面メッシュ(trimesh.Scene)。
+
+    layered=True: 前景の縁の「背後」を別レイヤーとして生成補完し、奥に配置する。
+    これにより横にずれた/回り込んだときに前景の裏の背景が見え、奥行き(視差)が出る。
+    """
+    import cv2
+
     progress = progress or _noop
     progress("mesh", 0, 1, "パノラマ統合（equirect RGBD）...")
     color, radius, valid, _ = _build_equirect_rgbd(prediction, view_index, vp_idx, eq_w)
@@ -128,17 +159,7 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
     if inpaint:
         progress("mesh", 0, 1, "穴を生成補完（LaMa）...")
         color, radius = _inpaint_equirect(color, radius, valid)
-        valid_mesh = np.ones_like(valid)
-    else:
-        valid_mesh = valid
-
-    progress("mesh", 0, 1, "球面メッシュ生成 ...")
-    eq_h, eq_w2 = radius.shape
-    lon = (np.arange(eq_w2) / eq_w2 - 0.5) * 2 * np.pi
-    lat = (0.5 - np.arange(eq_h) / eq_h) * np.pi
-    LON, LAT = np.meshgrid(lon, lat)
-    dirs = np.stack([np.cos(LAT) * np.sin(LON), np.sin(LAT), np.cos(LAT) * np.cos(LON)], -1)
-    verts = (dirs * radius[..., None]).reshape(-1, 3)
+        valid = np.ones_like(valid)
 
     # スケール（メートル化 or 半径正規化）
     n = prediction["depth"].shape[0]
@@ -146,30 +167,44 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
     centers = np.array([np.linalg.inv(_as_homogeneous44(ext[i]))[:3, 3] for i in range(n)])
     scale = _metric_scale(centers, list(view_index), viewpoints)
     if not scale or not np.isfinite(scale) or scale <= 0:
-        rad95 = float(np.percentile(radius[valid_mesh], 95)) or 1.0
+        rad95 = float(np.percentile(radius[valid], 95)) or 1.0
         scale = 15.0 / rad95
-    verts = verts * scale
 
-    # グリッド三角形化（経度方向は wrap）。深度不連続は分断。
-    idx = np.arange(eq_h * eq_w2).reshape(eq_h, eq_w2)
-    j = np.arange(eq_w2); jr = (j + 1) % eq_w2
-    tl = idx[:-1, j].ravel(); tr = idx[:-1, jr].ravel()
-    bl = idx[1:, j].ravel(); br = idx[1:, jr].ravel()
-    rr = (radius * scale).ravel()
-    rq = np.stack([rr[tl], rr[tr], rr[bl], rr[br]], 1)
-    rmean = rq.mean(1) + 1e-9
-    cont = (rq.max(1) - rq.min(1)) / rmean < discontinuity_ratio
-    vflat = valid_mesh.ravel()
-    keep = cont & vflat[tl] & vflat[tr] & vflat[bl] & vflat[br]
-    tri1 = np.stack([tl, bl, tr], 1)[keep]
-    tri2 = np.stack([tr, bl, br], 1)[keep]
-    faces = np.concatenate([tri1, tri2], 0)
+    # 前景レイヤー
+    progress("mesh", 0, 1, "球面メッシュ生成（前景）...")
+    fv, ff, frgba = _eq_layer(color, radius, valid, scale, discontinuity_ratio)
+    all_v = [fv]; all_f = [ff]; all_c = [frgba]; voff = len(fv)
+
+    # 背景レイヤー（遮蔽補完）: 前景(近)を周囲の遠で置換し、その色を LaMa で描き直す。
+    fg_frac = 0.0
+    if layered:
+        progress("mesh", 0, 1, "遮蔽の背後を生成補完（レイヤード）...")
+        rad32 = radius.astype(np.float32)
+        win = max(9, (eq_w // 64) | 1)  # 奇数の窓
+        rmax = cv2.dilate(rad32, np.ones((win, win), np.uint8))  # 周囲の遠い半径
+        margin = np.maximum(0.5, 0.25 * rmax)
+        fg = (rmax - rad32) > margin  # 周囲より十分近い＝前景の縁/物体
+        fg = cv2.dilate(fg.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+        fg_frac = float(fg.mean())
+        if fg.any():
+            try:
+                from . import segment
+                bg_color = segment.inpaint_masked(color[None], fg[None])[0]
+            except Exception:
+                bg_color = cv2.inpaint(color, (fg.astype(np.uint8) * 255), 5, cv2.INPAINT_TELEA)
+            bv, bf, brgba = _eq_layer(bg_color, rmax, fg, scale, discontinuity_ratio)
+            all_v.append(bv); all_f.append(bf + voff); all_c.append(brgba)
+
+    verts = np.concatenate(all_v, 0)
+    faces = np.concatenate(all_f, 0)
+    rgba = np.concatenate(all_c, 0)
 
     verts, _ = _level_ground(verts.astype(np.float32))
-    ref = np.zeros(len(verts), bool); ref[np.unique(faces)] = True
+    ref = np.zeros(len(verts), bool)
+    if len(faces):
+        ref[np.unique(faces)] = True
     verts = (verts - np.median(verts[ref], axis=0)).astype(np.float32)
 
-    rgba = np.concatenate([color.reshape(-1, 3), np.full((len(verts), 1), 255, np.uint8)], 1)
     m = trimesh.Trimesh(vertices=verts, faces=faces, vertex_colors=rgba, process=False)
     m.remove_unreferenced_vertices()
     m = _drop_small_components(m)
@@ -178,5 +213,6 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
     scene = trimesh.Scene(); scene.add_geometry(m)
     info = {"representation": "mesh", "method": "panorama", "vertex_count": int(len(m.vertices)),
             "face_count": int(len(m.faces)), "viewpoints": 1, "eq_w": eq_w,
-            "hole_filled_frac": round(filled_frac, 3), "inpaint": bool(inpaint)}
+            "hole_filled_frac": round(filled_frac, 3), "inpaint": bool(inpaint),
+            "layered": bool(layered), "occlusion_fill_frac": round(fg_frac, 3)}
     return scene, info

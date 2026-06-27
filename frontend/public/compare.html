@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>html,body{margin:0;height:100%;background:#aac4d8;overflow:hidden}#c{display:block}</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+// 生成3Dを「入力画像と同じカメラ姿勢」で1枚レンダリングして比較するための固定姿勢ビューア。
+// 復元世界は viewpoint0 を原点・北=-Z・東=+X とするので、heading=h の入力フレームは
+// 原点から dir=(sin h, 0, -cos h) を向いた画になる。点群は drei splat と同じ素点なので
+// 形・色の一致を見れば「画像 vs 3D」の忠実度がわかる。
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const qs = new URLSearchParams(location.search);
+const glb = qs.get("glb");
+const headingDeg = Number(qs.get("heading") ?? 0);
+const fov = Number(qs.get("fov") ?? 90);
+const eye = Number(qs.get("eye") ?? 0);        // カメラ高さ(世界Y)。点群の地面位置に合わせ調整
+const psize = Number(qs.get("psize") ?? 0.05); // 点サイズ(m)
+const W = Number(qs.get("w") ?? 960), H = Number(qs.get("h") ?? 960);
+
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(W, H);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xaac4d8);
+const camera = new THREE.PerspectiveCamera(fov, W / H, 0.02, 5000);
+
+window.ready = false;
+new GLTFLoader().load(glb, (gltf) => {
+  let pts = 0, ys = [];
+  gltf.scene.updateWorldMatrix(true, true);
+  gltf.scene.traverse((o) => {
+    if (o.isPoints) {
+      o.material = new THREE.PointsMaterial({ vertexColors: true, size: psize, sizeAttenuation: true });
+      o.frustumCulled = false;
+    } else if (o.isMesh) {
+      o.material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      o.frustumCulled = false;
+    }
+    const p = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+    if (p) { pts += p.count; const m = o.matrixWorld, v = new THREE.Vector3();
+      for (let i = 0; i < p.count; i += Math.max(1, (p.count/2000)|0)) { v.fromBufferAttribute(p, i).applyMatrix4(m); ys.push(v.y); } }
+  });
+  scene.add(gltf.scene);
+  ys.sort((a,b)=>a-b);
+  const medY = ys.length ? ys[(ys.length*0.5)|0] : 0;     // だいたいの地面/シーン中央
+  window.medY = medY; window.vertexCount = pts;
+
+  // カメラ: 原点に立ち heading 方向を向く。eye 未指定なら中央値Yより少し上に置く。
+  const camY = qs.has("eye") ? eye : (medY + 1.5);
+  const h = headingDeg * Math.PI / 180;
+  camera.position.set(0, camY, 0);
+  camera.lookAt(Math.sin(h), camY, -Math.cos(h));
+  window.camY = camY;
+  renderer.render(scene, camera);
+  window.ready = true;
+}, undefined, (e) => { window.loadError = String(e); });
+</script>
+</body>
+</html>

@@ -563,15 +563,6 @@ export default function Home() {
               >
                 {building3d ? "生成中..." : "● パノラマ生成3D（隙間なし）"}
               </button>
-              <button
-                type="button"
-                className="primaryWide prim"
-                onClick={() => handle3DMulti("primitive")}
-                disabled={!current || building3d}
-                title="壁/床/天井を平面、柱を円柱、什器を箱に整形。ゲームのブロックアウト風の独立オブジェクトにします"
-              >
-                {building3d ? "生成中..." : "▦ プリミティブ3D（ゲーム風）"}
-              </button>
             </>
           )}
 

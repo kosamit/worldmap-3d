@@ -363,11 +363,12 @@ export async function reconstructMultiview(
 
 export async function fetchPano(
   base: string,
-  params: { panoId: string; outWidth?: number },
+  params: { panoId: string; outWidth?: number; hi?: boolean },
 ): Promise<PanoResult> {
   const form = new FormData();
   form.append("pano_id", params.panoId);
   if (params.outWidth) form.append("out_width", String(params.outWidth));
+  if (params.hi) form.append("hi", "true");
   const res = await fetch(`${normalizeBase(base)}/api/streetview/cube`, {
     method: "POST",
     body: form,

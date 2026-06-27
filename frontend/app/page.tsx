@@ -497,29 +497,17 @@ export default function Home() {
     }
   }, [current, backend, say, multi]);
 
-  // 今表示中のビュー(緯度経度＋向き)を超解像して新しいタブで開く。
+  // 今のパノラマを高精細版に作り直してテクスチャを差し替える（その場で見回せる）。
   const handleEnhanceView = useCallback(async () => {
     if (!current) return;
     setEnhancing(true);
-    say("現在のビューを高解像度化中 ...");
+    say("このパノラマを高精細化中（狭角タイルを多数取得）...");
     try {
-      const form = new FormData();
-      form.append("lat", String(current.lat));
-      form.append("lng", String(current.lng));
-      form.append("heading", String(Math.round(facingRef.current)));
-      form.append("pitch", "0");
-      form.append("fov", "90");
-      form.append("mode", "esrgan");
-      const res = await fetch(
-        `${backend.replace(/\/$/, "")}/api/enhance/view`,
-        { method: "POST", body: form },
-      );
-      if (!res.ok) throw new Error(await res.text());
-      const blob = await res.blob();
-      window.open(URL.createObjectURL(blob), "_blank");
-      say("高解像度画像を新しいタブで開きました");
+      const pano = await fetchPano(backend, { panoId: current.panoId, hi: true });
+      setEquirect(pano.equirect);
+      say("高精細パノラマに切り替えました（そのまま見回せます）");
     } catch (e) {
-      say(`高解像度化に失敗: ${e}`, true);
+      say(`高精細化に失敗: ${e}`, true);
     } finally {
       setEnhancing(false);
     }
@@ -594,9 +582,9 @@ export default function Home() {
             className="primaryWide"
             onClick={handleEnhanceView}
             disabled={!current || enhancing}
-            title="今表示中の向きのStreet ViewをReal-ESRGANで超解像し、新しいタブで開きます"
+            title="今のパノラマを狭角タイルで作り直して高精細化し、その場で見回せます"
           >
-            {enhancing ? "高解像度化中..." : "🔍 今のビューを高解像度化"}
+            {enhancing ? "高精細化中..." : "🔍 このパノラマを高精細化"}
           </button>
 
           <div className="grid2 row2">

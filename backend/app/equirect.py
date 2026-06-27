@@ -24,8 +24,16 @@ SOURCE_FOV = 62.0
 POLE_FOV = 90.0
 
 
-def _source_views() -> list[tuple[float, float, float]]:
+def _source_views(hi: bool = False) -> list[tuple[float, float, float]]:
     views: list[tuple[float, float, float]] = []
+    if hi:
+        # 高精細: 狭角(=ズーム)タイルを多数集めて Google の実解像度を引き出す。
+        for heading in range(0, 360, 30):  # 12 方位
+            for pitch in (-60.0, -30.0, 0.0, 30.0, 60.0):
+                views.append((float(heading), pitch, 34.0))
+        views.append((0.0, 90.0, 60.0))
+        views.append((0.0, -90.0, 60.0))
+        return views
     for heading in range(0, 360, 45):  # 8 方位
         for pitch in (-45.0, 0.0, 45.0):
             views.append((float(heading), pitch, SOURCE_FOV))
@@ -56,11 +64,15 @@ def build_equirectangular(
     pano: str | None = None,
     out_width: int = 2560,
     tile_size: int = 640,
+    hi: bool = False,
 ) -> Image.Image:
-    """複数タイルを取得して equirectangular 画像(RGB)を返す。"""
+    """複数タイルを取得して equirectangular 画像(RGB)を返す。
+
+    hi=True で狭角タイルを多数集め、Google の実解像度で高精細化する（GPU不要）。
+    """
     out_w = out_width
     out_h = out_width // 2
-    views = _source_views()
+    views = _source_views(hi=hi)
 
     def _fetch(view: tuple[float, float, float]) -> np.ndarray:
         heading, pitch, fov = view

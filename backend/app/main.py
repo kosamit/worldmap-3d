@@ -904,33 +904,39 @@ def streetview_pano(
     lat: float = Form(0.0),
     lng: float = Form(0.0),
     out_width: int = Form(2560),
+    hi: bool = Form(False),
     api_key: str | None = Form(None),
 ):
     """1 パノラマ分の equirectangular(全天球)画像を返す（pano_id でキャッシュ）。
 
-    多数の狭角タイルを再投影して高精細にする。フロントは隣接リンクを辿りながら
-    進む先のパノラマだけを都度取得する。
+    多数の狭角タイルを再投影して高精細にする。hi=True で更に狭角タイルを多数集め、
+    out_width も上げて Google の実解像度で高精細化する（同じビューワーで見回せる）。
     """
-    out_width = max(1024, min(4096, out_width))
+    # hi は実解像度を引き出すため out_width を大きく許可（既定も引き上げ）。
+    if hi:
+        out_width = max(4096, min(8192, out_width if out_width > 2560 else 6144))
+    else:
+        out_width = max(1024, min(4096, out_width))
     out_dir = storage.pano_dir(pano_id)
     dir_name = out_dir.name
-    equirect_path = out_dir / "equirect.jpg"
+    fname = "equirect_hi.jpg" if hi else "equirect.jpg"
+    equirect_path = out_dir / fname
 
     if not equirect_path.exists():
         try:
             image = build_equirectangular(
-                lat, lng, api_key=api_key, pano=pano_id, out_width=out_width
+                lat, lng, api_key=api_key, pano=pano_id, out_width=out_width, hi=hi
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"パノラマ取得に失敗: {exc}")
         out_dir.mkdir(parents=True, exist_ok=True)
-        image.save(str(equirect_path), format="JPEG", quality=85)
+        image.save(str(equirect_path), format="JPEG", quality=90)
 
     return {
         "pano_id": pano_id,
-        "equirect": f"/panos/{dir_name}/equirect.jpg",
+        "equirect": f"/panos/{dir_name}/{fname}",
     }
 
 

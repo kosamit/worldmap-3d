@@ -28,6 +28,7 @@ const eye = Number(qs.get("eye") ?? 0);        // カメラ高さ(世界Y)。点
 const cx = Number(qs.get("cx") ?? 0);          // カメラ水平オフセットX(東)
 const cz = Number(qs.get("cz") ?? 0);          // カメラ水平オフセットZ(+で南へ後退)
 const psize = Number(qs.get("psize") ?? 0.05); // 点サイズ(m)
+const onlypano = qs.get("onlypano");           // 指定時はその名前を含む pano だけ表示(PanoFader相当)
 const W = Number(qs.get("w") ?? 960), H = Number(qs.get("h") ?? 960);
 
 const canvas = document.getElementById("c");
@@ -42,6 +43,10 @@ new GLTFLoader().load(glb, (gltf) => {
   let pts = 0, ys = [];
   gltf.scene.updateWorldMatrix(true, true);
   gltf.scene.traverse((o) => {
+    if (onlypano && (o.isMesh || o.isPoints)) {
+      const nm = o.name || (o.parent && o.parent.name) || "";
+      if (!nm.includes(onlypano)) { o.visible = false; return; }
+    }
     if (o.isPoints) {
       o.material = new THREE.PointsMaterial({ vertexColors: true, size: psize, sizeAttenuation: true });
       o.frustumCulled = false;

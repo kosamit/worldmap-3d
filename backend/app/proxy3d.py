@@ -21,50 +21,88 @@ import numpy as np
 import trimesh
 
 from .equirect import build_equirectangular
-from . import semseg
 from .panorama3d import _equirect_dirs, _eq_layer, _inpaint_equirect
 from .reconstruct_da3 import _noop, _viewpoint_enu
 
 logger = logging.getLogger(__name__)
 
+# ADE20K(屋内対応)セグメンテーション。Cityscapes(屋外運転)は屋内の遠い床を「壁」と誤判定し
+# 床/壁接地が近傍に潰れる→壁が球になる。ADE20Kは floor/wall/ceiling を持ち、床が壁まで届く
+# ＝接地距離が方位ごとに変わる＝実形状の奥行きが出る。
+_ADE_MODEL_ID = "nvidia/segformer-b1-finetuned-ade-512-512"
+_ADE_FLOOR = {3, 6, 11, 13, 28, 29, 53}   # floor, road, sidewalk, earth, rug, field, path
+_ADE_SKY = {2}
+_ade: dict = {}
+
+
+def _ade_labels(eq_img):
+    """equirect写真 → ADE20K ラベルマップ(H,W)。モデルはモジュールにキャッシュ。"""
+    import torch
+    from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+
+    if not _ade:
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        _ade["dev"] = dev
+        _ade["proc"] = SegformerImageProcessor.from_pretrained(_ADE_MODEL_ID)
+        _ade["model"] = SegformerForSemanticSegmentation.from_pretrained(_ADE_MODEL_ID).to(dev).eval()
+    W, H = eq_img.size
+    with torch.no_grad():
+        inp = _ade["proc"](images=eq_img, return_tensors="pt").to(_ade["dev"])
+        logits = _ade["model"](**inp).logits
+        up = torch.nn.functional.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+        return up.argmax(1)[0].cpu().numpy()
+
+
+def unload() -> None:
+    """ADE20K モデルを解放（VRAM 返却）。"""
+    _ade.clear()
+
 
 def _build_proxy_mesh(eq_img, camera_height_m, inpaint, far_clip_m):
     """1枚の equirect 写真 → (verts, faces, rgba, stats)。既知高さで床平面＋壁＋テクスチャ。"""
-    from PIL import Image
-
     color = np.asarray(eq_img.convert("RGB"))
     H, W = color.shape[:2]
-    C = semseg.CATEGORIES
-    FLOOR, SKY = C.index("floor"), C.index("sky")
 
-    cat = semseg.segment_categories([eq_img])[0]
-    cat = np.asarray(Image.fromarray(cat.astype(np.uint8)).resize((W, H), Image.NEAREST))
+    lab = _ade_labels(eq_img)              # (H,W) ADE20K ラベル
+    is_floor = np.isin(lab, list(_ADE_FLOOR))
+    is_sky = np.isin(lab, list(_ADE_SKY))
 
     dirs = _equirect_dirs(H, W)            # (H,W,3) y上, lon0=+Z
     dy = dirs[..., 1]
 
-    # --- 床: 既知の地面平面 y=-H。下向き光線は全て床に当たる（幾何は既知）ので
-    #     セグメントに依らず床面を張り、テクスチャ欠落(天底/空誤検出)は後で補完する。
-    floor_mask = dy < -0.05
-    r_floor = np.zeros((H, W), np.float32)
-    r_floor[floor_mask] = np.clip(camera_height_m / (-dy[floor_mask]), 0.3, far_clip_m)
-    floor_texture_hole = floor_mask & (cat != FLOOR)   # 床面だが写真が無効＝補完対象
+    eps = 0.05
+    down = dy < -eps
+    r_geo = np.where(down, camera_height_m / (-np.minimum(dy, -eps)), 0.0)  # 床平面までの距離
 
-    # --- 壁: 各カラムの床到達距離に鉛直面を立てる ---
-    r_base = np.zeros(W, np.float32)
+    # --- 壁基準距離 D[col]: 各カラムで「見えている床(セグメント)」が届く最遠距離
+    #     ＝床と壁の接地境界。ここに壁が立つ。既知高さ×接地点 が単眼の奥行き手がかり。
+    #     これがカラムごとに変わる＝部屋の実形状＝歩くと視差が出る（球ではない）。
+    seg_floor = down & is_floor
+    D = np.zeros(W, np.float32)
     for w in range(W):
-        col = r_floor[:, w][floor_mask[:, w]]
-        r_base[w] = np.percentile(col, 90) if col.size else 0.0
-    good = r_base > 0
-    if good.any():
+        col = r_geo[:, w][seg_floor[:, w]]
+        D[w] = np.percentile(col, 90) if col.size >= 3 else 0.0
+    good = D > 0
+    if good.any():                       # 床が見えないカラムは最近傍の壁距離で補間
         idx = np.where(good, np.arange(W), 0)
         np.maximum.accumulate(idx, out=idx)
-        r_base = r_base[idx]
-        r_base[r_base == 0] = np.median(r_base[r_base > 0])
+        D = D[idx]
+        D[D == 0] = np.median(D[good])
     else:
-        r_base[:] = min(8.0, far_clip_m)
-    r_wall = np.broadcast_to(r_base[None, :], (H, W))
-    wall_mask = (cat != SKY) & (~floor_mask) & (dy > -0.25)
+        D[:] = min(8.0, far_clip_m)
+    D = np.clip(D, 1.0, far_clip_m)
+    Dcol = D[None, :]                     # (1,W)
+
+    # --- 床: 既知平面を接地境界 D まで張る（境界より遠い下向き画素は壁が遮るので床にしない）。
+    #     セグメント外でも幾何は既知なので床面にし、テクスチャ欠落は後で LaMa 補完。
+    floor_mask = down & (r_geo <= Dcol)
+    r_floor = np.where(floor_mask, r_geo, 0.0).astype(np.float32)
+    floor_texture_hole = floor_mask & (~is_floor)
+
+    # --- 壁/天井/物体: 接地境界より上の非空画素を D[col] に立てる（カラムごとに距離が違う）。
+    #     天頂付近(急な上)は半径Dだと過剰に高くなるので落とす。
+    wall_mask = (~floor_mask) & (~is_sky) & (dy < 0.5)
+    r_wall = np.broadcast_to(Dcol, (H, W))
 
     radius = np.where(floor_mask, r_floor, r_wall).astype(np.float32)
     valid = floor_mask | wall_mask
@@ -80,7 +118,7 @@ def _build_proxy_mesh(eq_img, camera_height_m, inpaint, far_clip_m):
     stats = {
         "floor_px": int(floor_mask.sum()),
         "wall_px": int(wall_mask.sum()),
-        "sky_dropped_px": int((cat == SKY).sum()),
+        "sky_dropped_px": int(is_sky.sum()),
         "texture_holes_px": int(floor_texture_hole.sum()),
         "inpaint_lama": bool(lama),
     }

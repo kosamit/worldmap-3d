@@ -797,7 +797,7 @@ def reconstruct_multiview(
     rvs = ref_view_strategy if ref_view_strategy in depth_da3.REF_VIEW_STRATEGIES else "saddle_balanced"
     prm = process_res_method if process_res_method in depth_da3.PROCESS_RES_METHODS else "upper_bound_resize"
     params = {
-        "max_views": max(1, min(8, max_views)),
+        "max_views": max(1, min(12 if method == "proxy" else 8, max_views)),  # proxyは安価＝高密度可
         "heading_count": max(2, min(8, heading_count)),
         "radius_m": max(3.0, min(40.0, float(radius_m))),
         "pitch": float(pitch),

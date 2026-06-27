@@ -426,10 +426,11 @@ export default function Home() {
         {
           lat: current.lat,
           lng: current.lng,
-          maxViews: multi.maxViews,
+          maxViews: isProxy ? 10 : multi.maxViews,
           headingCount: isProxy ? 2 : multi.headingCount,
           pitchCount: isProxy ? 1 : multi.pitchCount,
-          radiusM: multi.radiusM,
+          // proxyは小半径で高密度パノ(駅構内は~2-3m間隔)を集め、パノ間の被覆ギャップを消す。
+          radiusM: isProxy ? 5 : multi.radiusM,
           confPercentile: multi.confPercentile,
           ensurePercentile: multi.ensurePercentile,
           farClipM: multi.farClipM,

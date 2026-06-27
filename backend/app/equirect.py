@@ -27,12 +27,14 @@ POLE_FOV = 90.0
 def _source_views(hi: bool = False) -> list[tuple[float, float, float]]:
     views: list[tuple[float, float, float]] = []
     if hi:
-        # 高精細: 狭角(=ズーム)タイルを多数集めて Google の実解像度を引き出す。
-        for heading in range(0, 360, 30):  # 12 方位
-            for pitch in (-60.0, -30.0, 0.0, 30.0, 60.0):
-                views.append((float(heading), pitch, 34.0))
-        views.append((0.0, 90.0, 60.0))
-        views.append((0.0, -90.0, 60.0))
+        # 高精細(26枚): 通常と同じ 8方位×3仰角＋上下 だが、fovを少し狭めて(ズーム)
+        # 実解像度を稼ぎ、out_width も上げて鮮明化する。45°間隔に対し fov55 は約10°重なり
+        # で隙間なし。
+        for heading in range(0, 360, 45):  # 8 方位
+            for pitch in (-45.0, 0.0, 45.0):
+                views.append((float(heading), pitch, 55.0))
+        views.append((0.0, 90.0, 75.0))   # 真上
+        views.append((0.0, -90.0, 75.0))  # 真下
         return views
     for heading in range(0, 360, 45):  # 8 方位
         for pitch in (-45.0, 0.0, 45.0):

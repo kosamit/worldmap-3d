@@ -912,9 +912,9 @@ def streetview_pano(
     多数の狭角タイルを再投影して高精細にする。hi=True で更に狭角タイルを多数集め、
     out_width も上げて Google の実解像度で高精細化する（同じビューワーで見回せる）。
     """
-    # hi は実解像度を引き出すため out_width を大きく許可（既定も引き上げ）。
+    # hi は26枚(fov55)の実解像度に見合う out_width 4096 で鮮明化（過剰補間を避ける）。
     if hi:
-        out_width = max(4096, min(8192, out_width if out_width > 2560 else 6144))
+        out_width = 4096
     else:
         out_width = max(1024, min(4096, out_width))
     out_dir = storage.pano_dir(pano_id)

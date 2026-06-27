@@ -284,6 +284,8 @@ export interface MultiviewParams {
   method?: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive";
   tsdfVoxel?: number;
   depthModel?: string | null;
+  enhanceInput?: boolean;
+  enhanceUpscale?: number;
 }
 
 /**
@@ -340,6 +342,10 @@ export async function reconstructMultiview(
   if (params.method) form.append("method", params.method);
   if (params.tsdfVoxel != null) form.append("tsdf_voxel", String(params.tsdfVoxel));
   if (params.depthModel) form.append("depth_model", params.depthModel);
+  if (params.enhanceInput != null)
+    form.append("enhance_input", String(params.enhanceInput));
+  if (params.enhanceUpscale != null)
+    form.append("enhance_upscale", String(params.enhanceUpscale));
 
   const res = await fetch(`${root}/api/reconstruct/multiview`, {
     method: "POST",

@@ -558,6 +558,13 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
         progress("street_view", total_imgs, total_imgs,
                  f"{len(viewpoints)}地点×{hc}方向×{len(pitches)}段 を取得")
 
+        # 1.8 入力画像の高精細化（DA3前）。JPEGノイズ除去＋シャープで頂点色をクリーンに。
+        if params["enhance_input"]:
+            from . import enhance
+            progress("street_view", total_imgs, total_imgs, "入力画像を高精細化中 ...")
+            images = enhance.enhance_images(
+                images, upscale=params["enhance_upscale"], progress=progress)
+
         # 1.9 物体除去＋生成補完（LaMa）。推論前に画像から物体を消して穴を描き直す。
         #     こうすると「穴」ではなく自然な背景になり、その深度も推定される。
         if params["remove_objects"] and params["remove_classes"] and params["inpaint"]:
@@ -725,6 +732,8 @@ def reconstruct_multiview(
     process_res_method: str = Form("upper_bound_resize"),
     use_ray_pose: bool = Form(True),
     ref_view_strategy: str = Form("saddle_balanced"),
+    enhance_input: bool = Form(False),
+    enhance_upscale: float = Form(1.0),
     drop_sky: bool = Form(True),
     filter_black_bg: bool = Form(False),
     filter_white_bg: bool = Form(False),
@@ -762,6 +771,8 @@ def reconstruct_multiview(
         "process_res_method": prm,
         "use_ray_pose": bool(use_ray_pose),
         "ref_view_strategy": rvs,
+        "enhance_input": bool(enhance_input),
+        "enhance_upscale": max(1.0, min(4.0, float(enhance_upscale))),
         "drop_sky": bool(drop_sky),
         "filter_black_bg": bool(filter_black_bg),
         "filter_white_bg": bool(filter_white_bg),

@@ -66,6 +66,7 @@ interface MultiParams {
   processResMethod: string;
   useRayPose: boolean;
   refViewStrategy: string;
+  enhanceInput: boolean;
   dropSky: boolean;
   filterBlackBg: boolean;
   filterWhiteBg: boolean;
@@ -94,6 +95,7 @@ const FALLBACK_MULTI: MultiParams = {
   processResMethod: "upper_bound_resize",
   useRayPose: true,
   refViewStrategy: "saddle_balanced",
+  enhanceInput: false,
   dropSky: true,
   filterBlackBg: false,
   filterWhiteBg: false,
@@ -218,6 +220,7 @@ export default function Home() {
             processResMethod: m?.process_res_method ?? FALLBACK_MULTI.processResMethod,
             useRayPose: m?.use_ray_pose ?? FALLBACK_MULTI.useRayPose,
             refViewStrategy: m?.ref_view_strategy ?? FALLBACK_MULTI.refViewStrategy,
+            enhanceInput: FALLBACK_MULTI.enhanceInput,
             dropSky: m?.drop_sky ?? FALLBACK_MULTI.dropSky,
             filterBlackBg: m?.filter_black_bg ?? FALLBACK_MULTI.filterBlackBg,
             filterWhiteBg: m?.filter_white_bg ?? FALLBACK_MULTI.filterWhiteBg,
@@ -452,6 +455,7 @@ export default function Home() {
           processResMethod: multi.processResMethod,
           useRayPose: multi.useRayPose,
           refViewStrategy: multi.refViewStrategy,
+          enhanceInput: multi.enhanceInput,
           dropSky: multi.dropSky,
           filterBlackBg: multi.filterBlackBg,
           filterWhiteBg: multi.filterWhiteBg,
@@ -712,6 +716,15 @@ export default function Home() {
                         </option>
                       ))}
                     </select>
+                  </label>
+                  <label className="checkField">
+                    <input
+                      type="checkbox"
+                      checked={multi.enhanceInput}
+                      onChange={(e) => setMultiParam("enhanceInput", e.target.checked)}
+                      disabled={building3d}
+                    />
+                    入力画像を高精細化（ノイズ除去＋シャープ, DA3前）
                   </label>
                   <div className="grid2">
                     <label className="field">

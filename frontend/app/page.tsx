@@ -158,6 +158,7 @@ export default function Home() {
   // 複数パノ（つなぎ目なし）の各パノ中心。ビューワーの距離フェードに渡す。
   const [scenePanos, setScenePanos] = useState<PanoInfo[] | undefined>(undefined);
   const [building3d, setBuilding3d] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [params, setParams] = useState<Params3D>(FALLBACK_PARAMS);
@@ -496,6 +497,34 @@ export default function Home() {
     }
   }, [current, backend, say, multi]);
 
+  // 今表示中のビュー(緯度経度＋向き)を超解像して新しいタブで開く。
+  const handleEnhanceView = useCallback(async () => {
+    if (!current) return;
+    setEnhancing(true);
+    say("現在のビューを高解像度化中 ...");
+    try {
+      const form = new FormData();
+      form.append("lat", String(current.lat));
+      form.append("lng", String(current.lng));
+      form.append("heading", String(Math.round(facingRef.current)));
+      form.append("pitch", "0");
+      form.append("fov", "90");
+      form.append("mode", "esrgan");
+      const res = await fetch(
+        `${backend.replace(/\/$/, "")}/api/enhance/view`,
+        { method: "POST", body: form },
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      window.open(URL.createObjectURL(blob), "_blank");
+      say("高解像度画像を新しいタブで開きました");
+    } catch (e) {
+      say(`高解像度化に失敗: ${e}`, true);
+    } finally {
+      setEnhancing(false);
+    }
+  }, [current, backend, say]);
+
   const mapPoint: LatLng | null = current
     ? { lat: current.lat, lng: current.lng }
     : null;
@@ -559,6 +588,16 @@ export default function Home() {
               </button>
             </>
           )}
+
+          <button
+            type="button"
+            className="primaryWide"
+            onClick={handleEnhanceView}
+            disabled={!current || enhancing}
+            title="今表示中の向きのStreet ViewをReal-ESRGANで超解像し、新しいタブで開きます"
+          >
+            {enhancing ? "高解像度化中..." : "🔍 今のビューを高解像度化"}
+          </button>
 
           <div className="grid2 row2">
             <button

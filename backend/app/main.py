@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # backend/.env から GOOGLE_MAPS_API_KEY 等を読み込む
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -711,6 +711,35 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
     finally:
         # 成功・失敗いずれでも CUDA を解放（次回実行が巻き込まれないように）。
         _free_cuda()
+
+
+@app.post("/api/enhance/view")
+def enhance_view(
+    lat: float = Form(...),
+    lng: float = Form(...),
+    heading: float = Form(0.0),
+    pitch: float = Form(0.0),
+    fov: float = Form(90.0),
+    mode: str = Form("esrgan"),
+    size: int = Form(640),
+    api_key: str | None = Form(None),
+):
+    """今表示中のビュー(緯度経度＋向き)を再取得し超解像して PNG を返す。"""
+    from . import enhance
+    mode = mode if mode in ("light", "esrgan") else "esrgan"
+    sz = max(256, min(640, int(size)))
+    try:
+        image, _ = fetch_streetview(
+            lat, lng, heading=heading, pitch=pitch, fov=fov,
+            size=f"{sz}x{sz}", api_key=api_key)
+        out = enhance.enhance_images([image], mode=mode)[0]
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"高解像度化に失敗: {exc}")
+    finally:
+        _free_cuda()
+    buf = io.BytesIO()
+    out.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
 
 
 @app.post("/api/reconstruct/multiview")

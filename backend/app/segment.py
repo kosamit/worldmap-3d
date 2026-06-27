@@ -30,6 +30,44 @@ def class_names(model_id: str | None = None) -> dict[int, str]:
     return dict(_load(model_id).names)
 
 
+_lama = None
+
+
+def _load_lama():
+    global _lama
+    if _lama is None:
+        import torch
+        from simple_lama_inpainting import SimpleLama
+
+        _lama = SimpleLama(device="cuda" if torch.cuda.is_available() else "cpu")
+    return _lama
+
+
+def inpaint_masked(images_uint8: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """マスク領域を LaMa で生成補完した画像 (N,H,W,3) uint8 を返す。
+
+    images_uint8: (N,H,W,3), masks: (N,H,W) bool（True=補完する穴）。
+    検出が無い画像はそのまま返す。
+    """
+    from PIL import Image
+
+    lama = _load_lama()
+    out = []
+    for i in range(len(images_uint8)):
+        src = images_uint8[i][:, :, :3]
+        m = masks[i]
+        if not m.any():
+            out.append(src)
+            continue
+        res = lama(Image.fromarray(np.ascontiguousarray(src)),
+                   Image.fromarray((m * 255).astype(np.uint8)))
+        res = res.convert("RGB")
+        if res.size != (src.shape[1], src.shape[0]):
+            res = res.resize((src.shape[1], src.shape[0]), Image.BILINEAR)
+        out.append(np.asarray(res))
+    return np.stack(out)
+
+
 def removal_masks(
     images_uint8: np.ndarray,
     classes_to_remove: list[str],

@@ -234,6 +234,7 @@ def config():
             "raw": False,
             "remove_objects": False,
             "remove_classes": "person",
+            "inpaint": False,
         },
         "multiview_ref_view_strategies": [
             {"id": "saddle_balanced", "label": "saddle_balanced（推奨・バランス）"},
@@ -544,6 +545,22 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
         progress("street_view", total_imgs, total_imgs,
                  f"{len(viewpoints)}地点×{hc}方向×{len(pitches)}段 を取得")
 
+        # 1.9 物体除去＋生成補完（LaMa）。推論前に画像から物体を消して穴を描き直す。
+        #     こうすると「穴」ではなく自然な背景になり、その深度も推定される。
+        if params["remove_objects"] and params["remove_classes"] and params["inpaint"]:
+            import numpy as _np
+
+            from . import segment
+            progress("street_view", total_imgs, total_imgs, "物体除去＋生成補完（LaMa）中 ...")
+            arr = _np.stack([_np.asarray(im.convert("RGB")) for im in images])
+            masks0 = segment.removal_masks(arr, params["remove_classes"])
+            if masks0.any():
+                filled = segment.inpaint_masked(arr, masks0)
+                images = [Image.fromarray(filled[i]) for i in range(len(filled))]
+                progress("street_view", total_imgs, total_imgs,
+                         f"生成補完 完了（{int(masks0.reshape(len(masks0),-1).any(1).sum())}枚を補修）")
+            _free_cuda()  # YOLO/LaMa のGPUを解放してからDA3推論（メモリ競合で遅くなるのを防ぐ）
+
         # 2. DA3 マルチビュー推論（フェーズ: depth）。推論は直列化。
         with _infer_lock:
             base = f"DA3 マルチビュー推論中（{total_imgs}枚・モデルロード含む）"
@@ -563,8 +580,8 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                      "深度＋カメラポーズ推定 完了"
                      + ("（レイベース）" if params["use_ray_pose"] else ""))
 
-            # 2.5 物体除去（YOLOセグメンテーション）。指定クラス画素の深度を無効化。
-            if params["remove_objects"] and params["remove_classes"]:
+            # 2.5 物体除去（穴あけ）。inpaint=Trueのときは1.9で補完済みなのでスキップ。
+            if params["remove_objects"] and params["remove_classes"] and not params["inpaint"]:
                 progress("depth", 1, 1, "物体除去（YOLO）中 ...")
                 from . import segment
                 masks = segment.removal_masks(
@@ -688,6 +705,7 @@ def reconstruct_multiview(
     raw: bool = Form(False),
     remove_objects: bool = Form(False),
     remove_classes: str = Form("person"),
+    inpaint: bool = Form(False),
     method: str = Form("mesh"),
     tsdf_voxel: float = Form(0.12),
     depth_model: str | None = Form(None),
@@ -724,6 +742,7 @@ def reconstruct_multiview(
         "raw": bool(raw),
         "remove_objects": bool(remove_objects),
         "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
+        "inpaint": bool(inpaint),
         "method": method if method in ("tsdf", "poisson") else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,

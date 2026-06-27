@@ -43,6 +43,7 @@ export interface MultiviewDefaults {
   raw: boolean;
   remove_objects: boolean;
   remove_classes: string;
+  inpaint: boolean;
 }
 
 export interface AppConfig {
@@ -279,6 +280,7 @@ export interface MultiviewParams {
   rawMode?: boolean;
   removeObjects?: boolean;
   removeClasses?: string;
+  inpaint?: boolean;
   method?: "mesh" | "tsdf" | "poisson";
   tsdfVoxel?: number;
   depthModel?: string | null;
@@ -334,6 +336,7 @@ export async function reconstructMultiview(
   if (params.rawMode != null) form.append("raw", String(params.rawMode));
   if (params.removeObjects != null) form.append("remove_objects", String(params.removeObjects));
   if (params.removeClasses) form.append("remove_classes", params.removeClasses);
+  if (params.inpaint != null) form.append("inpaint", String(params.inpaint));
   if (params.method) form.append("method", params.method);
   if (params.tsdfVoxel != null) form.append("tsdf_voxel", String(params.tsdfVoxel));
   if (params.depthModel) form.append("depth_model", params.depthModel);

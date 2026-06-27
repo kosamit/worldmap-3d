@@ -24,13 +24,17 @@ SOURCE_FOV = 62.0
 POLE_FOV = 90.0
 
 
-def _source_views() -> list[tuple[float, float, float]]:
+def _source_views(hi: bool = False) -> list[tuple[float, float, float]]:
     views: list[tuple[float, float, float]] = []
+    # hi: 通常と同じ26枚(8方位×3仰角＋上下)だが fov を狭めて(ズーム)実解像度を稼ぐ。
+    # 45°間隔に対し fov55 は約10°重なりで隙間なし。ESRGAN不要で十分きれい。
+    body_fov = 55.0 if hi else SOURCE_FOV
+    pole_fov = 75.0 if hi else POLE_FOV
     for heading in range(0, 360, 45):  # 8 方位
         for pitch in (-45.0, 0.0, 45.0):
-            views.append((float(heading), pitch, SOURCE_FOV))
-    views.append((0.0, 90.0, POLE_FOV))   # 真上
-    views.append((0.0, -90.0, POLE_FOV))  # 真下
+            views.append((float(heading), pitch, body_fov))
+    views.append((0.0, 90.0, pole_fov))   # 真上
+    views.append((0.0, -90.0, pole_fov))  # 真下
     return views
 
 
@@ -56,16 +60,17 @@ def build_equirectangular(
     pano: str | None = None,
     out_width: int = 2560,
     tile_size: int = 640,
+    hi: bool = False,
     enhance: str | None = None,
 ) -> Image.Image:
     """複数タイルを取得して equirectangular 画像(RGB)を返す。
 
-    enhance="esrgan"|"light" で各タイルを高精細化（fetch_streetview がキャッシュ）。
-    同条件のタイルは 3D化側と共有キャッシュされる。
+    hi=True で狭角(ズーム)タイルの実解像度で高精細化（ESRGAN不要）。同条件タイルは
+    3D化側と生タイルを共有キャッシュ。enhance は任意の追加超解像（既定なし）。
     """
     out_w = out_width
     out_h = out_width // 2
-    views = _source_views()
+    views = _source_views(hi=hi)
 
     def _fetch(view: tuple[float, float, float]) -> np.ndarray:
         heading, pitch, fov = view

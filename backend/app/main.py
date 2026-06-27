@@ -508,13 +508,13 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
         progress("street_view", 0, 1, "周辺の Street View 地点を収集中 ...")
         # 取得グリッドと高精細化方式を手法ごとに決める。
         if params["method"] == "panorama":
-            # フロントの高精細パノと「完全に同じ」グリッド(8方位×3仰角＋上下, fov62/90)で
-            # 取得 → 同一キャッシュキーになり、フロントで作った高精細タイルをそのまま流用。
-            # 3D化は常に高精細（未生成ならここで生成、既存ならキャッシュ即時）。
+            # フロントの高精細パノと「完全に同じ」高精細グリッド(8方位×3仰角＋上下, fov55/75)
+            # で取得 → 同一キャッシュキーで生タイルをそのまま共有・流用。3D化は常にこの
+            # 高精細(狭角=実解像度)で取得（ESRGAN不要・未生成ならここで取得）。
             from .equirect import _source_views
-            view_list = _source_views()
-            enhance_mode = "esrgan"
-            grid_desc = f"{len(view_list)}方向(パノ共有グリッド)"
+            view_list = _source_views(hi=True)
+            enhance_mode = None
+            grid_desc = f"{len(view_list)}方向(高精細パノ共有グリッド)"
         else:
             hc = params["heading_count"]
             headings = [i * 360.0 / hc for i in range(hc)]
@@ -912,9 +912,9 @@ def streetview_pano(
     タイルを再投影して全天球にする。hi=True で各タイルを ESRGAN 超解像し out_width も
     上げて高精細化する（3D化と同じ高精細タイルを共有・同じビューワーで見回せる）。
     """
-    # hi は各タイルをESRGANで拡大(640→1536)するので、それを活かす out_width で再投影。
+    # hi は狭角(fov55)タイルの実解像度に見合う out_width で再投影（ESRGAN不要）。
     if hi:
-        out_width = 6144
+        out_width = 4096
     else:
         out_width = max(1024, min(4096, out_width))
     out_dir = storage.pano_dir(pano_id)
@@ -925,8 +925,7 @@ def streetview_pano(
     if not equirect_path.exists():
         try:
             image = build_equirectangular(
-                lat, lng, api_key=api_key, pano=pano_id, out_width=out_width,
-                enhance=("esrgan" if hi else None),
+                lat, lng, api_key=api_key, pano=pano_id, out_width=out_width, hi=hi,
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc))

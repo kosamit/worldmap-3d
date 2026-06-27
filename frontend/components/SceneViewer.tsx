@@ -32,6 +32,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 const EYE_HEIGHT = 1.7;
 const WALK_SPEED = 40;
 const RUN_MULTIPLIER = 2.2;
+const FLY_SPEED = 12; // フリービューの飛行速度 (m/s)
 const DAMPING = 8.0;
 const GRAVITY = 25.0;
 const JUMP_VELOCITY = 8.5;
@@ -96,6 +97,7 @@ interface KeyState {
   left: boolean;
   right: boolean;
   run: boolean;
+  up: boolean;
 }
 
 function Player({
@@ -103,11 +105,13 @@ function Player({
   coordsRef,
   colliderRef,
   initialHeadingDeg,
+  mode,
 }: {
   onLockChange: (locked: boolean) => void;
   coordsRef: RefObject<HTMLDivElement | null>;
   colliderRef: RefObject<THREE.Mesh[]>;
   initialHeadingDeg?: number | null;
+  mode: "player" | "free";
 }) {
   const { camera } = useThree();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -136,6 +140,7 @@ function Player({
     left: false,
     right: false,
     run: false,
+    up: false,
   });
 
   useEffect(() => {
@@ -169,6 +174,7 @@ function Player({
           keys.current.run = true;
           break;
         case "Space":
+          keys.current.up = true; // フリーモードでは上昇
           if (canJump.current) {
             velocity.current.y = JUMP_VELOCITY;
             canJump.current = false;
@@ -193,6 +199,9 @@ function Player({
         case "KeyD":
         case "ArrowRight":
           keys.current.right = false;
+          break;
+        case "Space":
+          keys.current.up = false;
           break;
         case "ShiftLeft":
         case "ShiftRight":
@@ -246,6 +255,31 @@ function Player({
 
     if (!c.isLocked) return;
     const delta = Math.min(rawDelta, 0.1);
+
+    // フリービュー: 重力/衝突なしで視線方向に自由飛行（WASD＋Space上/Shift下）。
+    if (mode === "free") {
+      const k = keys.current;
+      const fwd = new THREE.Vector3();
+      camera.getWorldDirection(fwd);
+      const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
+      const mv = new THREE.Vector3();
+      if (k.forward) mv.add(fwd);
+      if (k.backward) mv.sub(fwd);
+      if (k.right) mv.add(right);
+      if (k.left) mv.sub(right);
+      if (k.up) mv.y += 1;
+      if (k.run) mv.y -= 1;
+      if (mv.lengthSq() > 0) {
+        mv.normalize().multiplyScalar(FLY_SPEED * delta);
+        camera.position.add(mv);
+      }
+      if (coordsRef.current) {
+        const p = camera.position;
+        coordsRef.current.textContent = `x:${p.x.toFixed(1)} y:${p.y.toFixed(1)} z:${p.z.toFixed(1)}`;
+      }
+      return;
+    }
+
     const v = velocity.current;
 
     v.x -= v.x * DAMPING * delta;
@@ -334,6 +368,7 @@ export default function SceneViewer({
   initialHeadingDeg?: number | null;
 }) {
   const [locked, setLocked] = useState(false);
+  const [mode, setMode] = useState<"player" | "free">("player");
   const coordsRef = useRef<HTMLDivElement | null>(null);
   const colliderRef = useRef<THREE.Mesh[]>([]);
 
@@ -360,23 +395,45 @@ export default function SceneViewer({
             />
           )}
         </Suspense>
-        {/* glbUrl ごとに Player を作り直し、カメラのスポーン状態/向きをリセット */}
+        {/* glbUrl/mode ごとに Player を作り直し、カメラ/操作状態をリセット */}
         <Player
-          key={glbUrl ?? "none"}
+          key={`${glbUrl ?? "none"}_${mode}`}
           onLockChange={setLocked}
           coordsRef={coordsRef}
           colliderRef={colliderRef}
           initialHeadingDeg={initialHeadingDeg}
+          mode={mode}
         />
       </Canvas>
+
+      <button
+        type="button"
+        className="viewModeToggle"
+        onClick={() => setMode((m) => (m === "player" ? "free" : "player"))}
+      >
+        {mode === "player" ? "🚶 プレイヤー" : "🕊 フリービュー"}（切替）
+      </button>
 
       {!locked && (
         <div className="blocker">
           <div className="instructions">
-            <p className="big">クリックで歩行開始</p>
+            <p className="big">
+              クリックで{mode === "player" ? "歩行開始" : "フリービュー開始"}
+            </p>
             <p>
-              <strong>WASD</strong> 移動 / <strong>マウス</strong> 視点 /{" "}
-              <strong>Shift</strong> ダッシュ / <strong>Esc</strong> 解除
+              {mode === "player" ? (
+                <>
+                  <strong>WASD</strong> 移動 / <strong>マウス</strong> 視点 /{" "}
+                  <strong>Shift</strong> ダッシュ / <strong>Space</strong> ジャンプ /{" "}
+                  <strong>Esc</strong> 解除
+                </>
+              ) : (
+                <>
+                  <strong>WASD</strong> 飛行 / <strong>マウス</strong> 視点 /{" "}
+                  <strong>Space</strong> 上昇 / <strong>Shift</strong> 下降 /{" "}
+                  <strong>Esc</strong> 解除
+                </>
+              )}
             </p>
           </div>
         </div>

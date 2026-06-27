@@ -532,3 +532,18 @@ body {
 .panoArrows .backBtn {
   background: rgba(44, 51, 61, 0.85);
 }
+
+.viewModeToggle {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  background: rgba(8,11,15,0.7);
+  color: #e6e9ed;
+  border: 1px solid #3a434f;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.viewModeToggle:hover { background: rgba(20,26,34,0.9); }

@@ -88,6 +88,9 @@ export interface SceneMeta {
   requested_views?: number;
   views_capped?: boolean;
   images_used?: number;
+  representation?: string;       // "gaussian" など
+  splat_url?: string;            // 3DGS の .splat 配信パス（drei <Splat> 用）
+  gaussian_count?: number;
 }
 
 export interface RouteParams {
@@ -198,6 +201,12 @@ export function glbUrl(base: string, meta: SceneMeta): string {
   return `${normalizeBase(base)}${meta.glb_url}`;
 }
 
+// 3DGS シーンの .splat フル URL（別オリジンの :8000 を直接 fetch する）。
+// splat_url が無い（非 gaussian）シーンでは null。
+export function splatUrl(base: string, meta: SceneMeta): string | null {
+  return meta.splat_url ? `${normalizeBase(base)}${meta.splat_url}` : null;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // 3D化ジョブの進捗を完了までポーリングし、結果 meta を返す共通ヘルパー。
@@ -263,7 +272,14 @@ export interface MultiviewParams {
   removeObjects?: boolean;
   removeClasses?: string;
   inpaint?: boolean;
-  method?: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" | "colliders";
+  method?:
+    | "mesh"
+    | "tsdf"
+    | "poisson"
+    | "panorama"
+    | "primitive"
+    | "colliders"
+    | "gaussian";
   tsdfVoxel?: number;
   depthModel?: string | null;
   enhanceInput?: boolean;

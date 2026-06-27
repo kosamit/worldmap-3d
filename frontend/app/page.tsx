@@ -6,6 +6,7 @@ import {
   fetchConfig,
   fetchPano,
   glbUrl,
+  splatUrl,
   reconstructMultiview,
   fetchGpu,
   freeGpu,
@@ -144,6 +145,8 @@ export default function Home() {
   // 表示モード: パノラマ写真 or 深度メッシュ(3D化)
   const [mode, setMode] = useState<"pano" | "mesh">("pano");
   const [meshGlb, setMeshGlb] = useState<string | null>(null);
+  // 3DGS シーンの .splat URL（あれば SceneViewer が写実 splat を描画）。
+  const [meshSplat, setMeshSplat] = useState<string | null>(null);
   // 3D化した時点でパノラマで向いていた方位（北=0,時計回り）。3D初期視線に使う。
   const [sceneHeadingDeg, setSceneHeadingDeg] = useState<number | null>(null);
   // 複数パノ（つなぎ目なし）の各パノ中心。ビューワーの距離フェードに渡す。
@@ -396,7 +399,7 @@ export default function Home() {
 
   // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
   // method="tsdf" で TSDF 融合（重なり層を1枚の連続面へ＝ソリッド）。
-  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" | "colliders" = "mesh") => {
+  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" | "colliders" | "gaussian" = "mesh") => {
     if (!current) {
       say("先に地図で地点を選んでください", true);
       return;
@@ -458,6 +461,7 @@ export default function Home() {
       );
       setSceneHeadingDeg(facingRef.current);
       setMeshGlb(glbUrl(backend, meta));
+      setMeshSplat(splatUrl(backend, meta));
       setScenePanos((meta as { panos?: PanoInfo[] }).panos);
       setMode("mesh");
       {
@@ -564,6 +568,15 @@ export default function Home() {
                 title="セマンティック検出＋既知カメラ高さで、床/壁/物体のコライダー(箱/円柱)を生成（深度不要・実験）"
               >
                 {building3d ? "生成中..." : "🧱 意味コライダー化（実験）"}
+              </button>
+              <button
+                type="button"
+                className="primaryWide"
+                onClick={() => handle3DMulti("gaussian")}
+                disabled={!current || building3d}
+                title="DA3点群を3D Gaussian Splatting(.splat)へ初期化し、写実 splat をアプリ内で観賞（学習なし・実験）"
+              >
+                {building3d ? "生成中..." : "✨ 3DGS（写実splat・実験）"}
               </button>
             </>
           )}
@@ -1139,6 +1152,7 @@ export default function Home() {
         {mounted && mode === "mesh" ? (
           <SceneViewer
             glbUrl={meshGlb}
+            splatUrl={meshSplat}
             initialHeadingDeg={sceneHeadingDeg}
             panos={scenePanos}
           />

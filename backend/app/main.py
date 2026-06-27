@@ -666,15 +666,20 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
             "camera_height_m": float(params["camera_height_m"]),
             **info,
         }
-        # 3DGS は .ply を scene ディレクトリへ別途保存（GLBは点群フォールバック）。
-        # 一時パスは meta.json に残さず splat_url を公開する。
+        # 3DGS は .ply(INRIA保管) と .splat(drei配信) を scene ディレクトリへ別途保存
+        # （GLBは点群フォールバック）。一時パスは meta.json に残さず、フロントが読める
+        # .splat を splat_url として公開する。
         splat_tmp = meta.pop("_splat_tmp", None)
-        if splat_tmp:
-            meta["splat_url"] = f"/scenes/{sid}/scene.ply"
+        drei_tmp = meta.pop("_splat_tmp_drei", None)
+        if drei_tmp:
+            meta["splat_url"] = f"/scenes/{sid}/scene.splat"
         storage.save_scene(scene, meta)
-        if splat_tmp:
+        if splat_tmp or drei_tmp:
             import shutil
-            shutil.move(splat_tmp, str(storage.scene_dir(sid) / "scene.ply"))
+            if splat_tmp:
+                shutil.move(splat_tmp, str(storage.scene_dir(sid) / "scene.ply"))
+            if drei_tmp:
+                shutil.move(drei_tmp, str(storage.scene_dir(sid) / "scene.splat"))
         meta["glb_url"] = f"/scenes/{sid}/scene.glb"
         progress("save", 1, 1, "完了")
         cap_note = (

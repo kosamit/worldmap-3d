@@ -70,6 +70,32 @@ def _write_gaussian_ply(path, pts, colors, scales, opacity=0.85) -> int:
     return n
 
 
+def _write_drei_splat(path, pts, colors, scales, opacity=0.85) -> int:
+    """点群＋色 → drei `<Splat>` 互換 .splat（32B/頂点）を書き出し、頂点数を返す。
+
+    レイアウト(各32バイト): pos f32×3 / scale f32×3 / RGBA u8×4 / rot u8×4。
+    drei は描画時に world=(x,-y,-z) と解釈する＝INRIA(y下/z前)前提。本点群は
+    three.js(y上/z後)なので位置を [1,-1,-1] で INRIA 系へ変換して書く。回転は
+    等方ガウスのため単位四元数(255,128,128,128)固定で見た目に影響しない。
+    """
+    n = len(pts)
+    pos = (pts.astype(np.float32) * np.array([1.0, -1.0, -1.0], np.float32))
+    scl = np.maximum(scales, 1e-6).astype(np.float32)[:, None].repeat(3, axis=1)
+    rgba = np.empty((n, 4), np.uint8)
+    rgba[:, :3] = colors.astype(np.uint8)
+    rgba[:, 3] = int(round(float(opacity) * 255.0))
+    rot = np.tile(np.array([255, 128, 128, 128], np.uint8), (n, 1))  # 単位四元数
+
+    row = np.empty((n, 32), np.uint8)
+    row[:, 0:12] = pos.view(np.uint8).reshape(n, 12)
+    row[:, 12:24] = scl.view(np.uint8).reshape(n, 12)
+    row[:, 24:28] = rgba
+    row[:, 28:32] = rot
+    with open(path, "wb") as f:
+        f.write(row.tobytes())
+    return n
+
+
 def build_gaussian_scene(prediction, view_index, viewpoints, params, progress=None,
                          opacity=0.85, splat_tmp_path=None):
     """DA3 予測 → 3D Gaussian .ply（初期化型）。(scene, info) を返す。
@@ -110,13 +136,19 @@ def build_gaussian_scene(prediction, view_index, viewpoints, params, progress=No
     if splat_tmp_path is None:
         import tempfile
         splat_tmp_path = tempfile.NamedTemporaryFile(suffix=".ply", delete=False).name
-    progress("mesh", 0, 1, "3D Gaussian (.ply) を書き出し中 ...")
+    progress("mesh", 0, 1, "3D Gaussian (.ply / .splat) を書き出し中 ...")
     ngauss = _write_gaussian_ply(splat_tmp_path, pts, colors, scales, opacity=opacity)
+    # フロント(drei <Splat>)が読めるのは 32B/頂点の .splat のみ。INRIA .ply は
+    # 将来の gsplat 最適化の初期点群として併存させ、配信は .splat を使う。
+    import tempfile
+    drei_tmp = tempfile.NamedTemporaryFile(suffix=".splat", delete=False).name
+    _write_drei_splat(drei_tmp, pts, colors, scales, opacity=opacity)
 
     info = dict(info)
     info["representation"] = "gaussian"
     info["method"] = "gaussian"
     info["gaussian_count"] = int(ngauss)
-    info["splat_format"] = "ply_inria_sh0"
-    info["_splat_tmp"] = str(splat_tmp_path)
+    info["splat_format"] = "splat_v1_32b"
+    info["_splat_tmp"] = str(splat_tmp_path)      # INRIA .ply（保管用）
+    info["_splat_tmp_drei"] = str(drei_tmp)       # drei .splat（配信用）
     return scene, info

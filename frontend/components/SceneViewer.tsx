@@ -5,7 +5,7 @@
 // 衝突判定（地面追従＋壁すり抜け防止）を行う。
 
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { PointerLockControls, useGLTF } from "@react-three/drei";
+import { PointerLockControls, useGLTF, Splat } from "@react-three/drei";
 import {
   Suspense,
   useCallback,
@@ -399,15 +399,20 @@ function Player({
 
 export default function SceneViewer({
   glbUrl,
+  splatUrl,
   initialHeadingDeg,
   panos,
 }: {
   glbUrl: string | null;
+  splatUrl?: string | null;
   initialHeadingDeg?: number | null;
   panos?: PanoInfo[];
 }) {
   const [locked, setLocked] = useState(false);
-  const [mode, setMode] = useState<"player" | "free">("player");
+  // 3DGS(splat)は BVH 衝突面を持たないため、初期は自由飛行(free)で観賞する。
+  const [mode, setMode] = useState<"player" | "free">(
+    splatUrl ? "free" : "player",
+  );
   const coordsRef = useRef<HTMLDivElement | null>(null);
   const colliderRef = useRef<THREE.Mesh[]>([]);
 
@@ -424,15 +429,20 @@ export default function SceneViewer({
         style={{ background: "#aac4d8" }}
       >
         <Suspense fallback={null}>
-          {glbUrl && (
-            <Model
-              key={glbUrl}
-              url={glbUrl}
-              panos={panos}
-              onReady={(meshes) => {
-                colliderRef.current = meshes;
-              }}
-            />
+          {splatUrl ? (
+            // 3DGS: 写実 splat を描画（衝突面なし＝フリービューで観賞）。
+            <Splat key={splatUrl} src={splatUrl} />
+          ) : (
+            glbUrl && (
+              <Model
+                key={glbUrl}
+                url={glbUrl}
+                panos={panos}
+                onReady={(meshes) => {
+                  colliderRef.current = meshes;
+                }}
+              />
+            )
           )}
         </Suspense>
         {(panos?.length ?? 0) > 1 && <PanoFader colliderRef={colliderRef} />}

@@ -615,6 +615,13 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                     scene, info = build_collider_scene(
                         pred, view_index, viewpoints,
                         camera_height_m=params["camera_height_m"], progress=progress)
+            elif params["method"] == "gaussian":
+                # DA3点群→3D Gaussian Splatting(.ply) 初期化（学習なし）。見た目の写実
+                # 表現。docs/new_paper_concept.md の「見た目=3DGS」。GLBは点群フォールバック。
+                from .gaussian import build_gaussian_scene
+                with _Heartbeat(progress, "mesh", "3D Gaussian生成中", 10.0 + 0.3 * total_imgs):
+                    scene, info = build_gaussian_scene(
+                        pred, view_index, viewpoints, params, progress=progress)
             else:
                 # GPSアンカー配置で面を張る（既定）。
                 scene, info = build_multiview_pointcloud(
@@ -659,7 +666,15 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
             "camera_height_m": float(params["camera_height_m"]),
             **info,
         }
+        # 3DGS は .ply を scene ディレクトリへ別途保存（GLBは点群フォールバック）。
+        # 一時パスは meta.json に残さず splat_url を公開する。
+        splat_tmp = meta.pop("_splat_tmp", None)
+        if splat_tmp:
+            meta["splat_url"] = f"/scenes/{sid}/scene.ply"
         storage.save_scene(scene, meta)
+        if splat_tmp:
+            import shutil
+            shutil.move(splat_tmp, str(storage.scene_dir(sid) / "scene.ply"))
         meta["glb_url"] = f"/scenes/{sid}/scene.glb"
         progress("save", 1, 1, "完了")
         cap_note = (
@@ -799,7 +814,7 @@ def reconstruct_multiview(
         "remove_objects": bool(remove_objects),
         "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
         "inpaint": bool(inpaint),
-        "method": method if method in ("tsdf", "poisson", "panorama", "primitive", "colliders") else "mesh",
+        "method": method if method in ("tsdf", "poisson", "panorama", "primitive", "colliders", "gaussian") else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }

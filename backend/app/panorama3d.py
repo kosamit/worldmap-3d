@@ -142,12 +142,15 @@ def _eq_layer(color, radius, valid, scale, discontinuity):
 
 
 def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
-                        inpaint=True, layered=True, discontinuity_ratio=0.5,
-                        max_faces=1_200_000, progress=None):
+                        inpaint=True, layered=True, front_discontinuity=0.12,
+                        back_discontinuity=0.5, max_faces=1_200_000, progress=None):
     """単一視点 equirect RGBD → 穴埋め＋レイヤード遮蔽補完 → 球面メッシュ(trimesh.Scene)。
 
-    layered=True: 前景の縁の「背後」を別レイヤーとして生成補完し、奥に配置する。
-    これにより横にずれた/回り込んだときに前景の裏の背景が見え、奥行き(視差)が出る。
+    layered=True: 前景は不連続でしっかり切って独立させ（柱が背景へ伸びない）、その背後を
+    別レイヤーとして生成補完し奥に配置する。横にずれる/回り込むと前景の裏の背景が見え、
+    奥行き(視差)が出る。
+      front_discontinuity: 前景の分断しきい値（小さいほど引き伸ばしを強く切る）。
+      back_discontinuity:  背景レイヤーの分断しきい値（背景は滑らかなので緩め）。
     """
     import cv2
 
@@ -170,9 +173,9 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
         rad95 = float(np.percentile(radius[valid], 95)) or 1.0
         scale = 15.0 / rad95
 
-    # 前景レイヤー
+    # 前景レイヤー（不連続でしっかり切る＝柱が背景へ伸びない）
     progress("mesh", 0, 1, "球面メッシュ生成（前景）...")
-    fv, ff, frgba = _eq_layer(color, radius, valid, scale, discontinuity_ratio)
+    fv, ff, frgba = _eq_layer(color, radius, valid, scale, front_discontinuity)
     all_v = [fv]; all_f = [ff]; all_c = [frgba]; voff = len(fv)
 
     # 背景レイヤー（遮蔽補完）: 前景(近)を周囲の遠で置換し、その色を LaMa で描き直す。
@@ -192,7 +195,7 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
                 bg_color = segment.inpaint_masked(color[None], fg[None])[0]
             except Exception:
                 bg_color = cv2.inpaint(color, (fg.astype(np.uint8) * 255), 5, cv2.INPAINT_TELEA)
-            bv, bf, brgba = _eq_layer(bg_color, rmax, fg, scale, discontinuity_ratio)
+            bv, bf, brgba = _eq_layer(bg_color, rmax, fg, scale, back_discontinuity)
             all_v.append(bv); all_f.append(bf + voff); all_c.append(brgba)
 
     verts = np.concatenate(all_v, 0)

@@ -590,13 +590,6 @@ export default function Home() {
           <div className="grid2 row2">
             <button
               type="button"
-              onClick={handle3D}
-              disabled={!current || building3d}
-            >
-              {building3d ? "3D化中..." : "この地点を3D化（簡易）"}
-            </button>
-            <button
-              type="button"
               className="ghost"
               onClick={() => setMode("pano")}
               disabled={mode === "pano"}

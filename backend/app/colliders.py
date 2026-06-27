@@ -16,7 +16,7 @@ import numpy as np
 import trimesh
 
 from . import semseg
-from .reconstruct_da3 import _as_homogeneous44, _noop
+from .reconstruct_da3 import _as_homogeneous44, _noop, _viewpoint_enu
 
 # カテゴリ → 表示色 (RGB)。debug メッシュ用。
 CATEGORY_COLOR = {
@@ -145,34 +145,20 @@ def _cyl_y(center, radius, height, rgba):
     return m
 
 
-def build_collider_scene(prediction, view_index, viewpoints, camera_height_m=2.5,
-                         eq_w=1024, floor_radius_m=30.0, wall_sectors=64,
-                         min_object_px=80, progress=None):
-    """意味equirect → 床/壁/物体コライダー（メートル）。(scene, info)。"""
+def _local_colliders_from_cat_eq(cat_eq, H, floor_radius_m, wall_sectors, min_object_px):
+    """1視点の意味equirect → ローカル系（その視点中心・北整列）の壁/物体コライダー list。
+
+    床は全視点共通なので含めない。各 dict は {class,type,center,size,yaw}（メートル, y上）。
+    """
     import cv2
 
-    progress = progress or _noop
-    H = float(camera_height_m)
-    vp0 = sorted({int(v) for v in view_index})[0]
-    cat_eq = build_semantic_equirect(prediction, view_index, vp0, eq_w=eq_w, progress=progress)
     eq_h, eq_w2 = cat_eq.shape
     _dirs, LAT = _equirect_dirs(eq_h, eq_w2)
     idx = {c: i for i, c in enumerate(semseg.CATEGORIES)}
+    out = []
 
-    scene = trimesh.Scene()
-    colliders = []
-
-    # --- 1. 床（水平面 y=-H） ---
-    progress("mesh", 0, 1, "床平面コライダー...")
-    R = floor_radius_m
-    scene.add_geometry(_box([0, -H, 0], [2 * R, 0.1, 2 * R], 0.0, [*CATEGORY_COLOR["floor"], 255]))
-    colliders.append({"class": "floor", "type": "plane",
-                      "center": [0.0, -H, 0.0], "size": [2 * R, 0.1, 2 * R], "yaw": 0.0})
-
-    # --- 2. 壁（方位セクタ毎に床-壁境界の接地距離へ） ---
-    progress("mesh", 0, 1, "壁コライダー...")
+    # 壁（方位セクタ毎に床-壁境界の接地距離へ）。
     is_wall = np.isin(cat_eq, [idx[c] for c in WALL_CATS])
-    n_wall = 0
     sector = (((np.arange(eq_w2) / eq_w2) * wall_sectors).astype(int)) % wall_sectors
     for s in range(wall_sectors):
         cols = np.flatnonzero(sector == s)
@@ -189,16 +175,11 @@ def build_collider_scene(prediction, view_index, viewpoints, camera_height_m=2.5
         height = max(2.0, min(20.0, dist * (np.tan(max(lat_top, 0.01)) - np.tan(min(lat_base, -0.0)))))
         cx, cz = dist * np.sin(theta), dist * np.cos(theta)
         width = 2 * np.pi * dist / wall_sectors * 1.1
-        scene.add_geometry(_box([cx, -H + height / 2, cz], [width, height, 0.3], theta,
-                                [*CATEGORY_COLOR["wall"], 255]))
-        colliders.append({"class": "wall", "type": "box",
-                          "center": [cx, -H + height / 2, cz],
-                          "size": [width, height, 0.3], "yaw": float(theta)})
-        n_wall += 1
+        out.append({"class": "wall", "type": "box",
+                    "center": [cx, -H + height / 2, cz],
+                    "size": [width, height, 0.3], "yaw": float(theta)})
 
-    # --- 3. 物体（車/人=箱, 柱=円柱）: 連結成分の接地点を床へ投影 ---
-    progress("mesh", 0, 1, "物体コライダー...")
-    n_obj = 0
+    # 物体（車/人=箱, 柱=円柱）: 連結成分の接地点を床へ投影。
     for cat in (OBJECT_BOX_CATS | OBJECT_CYL_CATS):
         mask = (cat_eq == idx[cat]).astype(np.uint8)
         if int(mask.sum()) < min_object_px:
@@ -220,23 +201,121 @@ def build_collider_scene(prediction, view_index, viewpoints, camera_height_m=2.5
             ang_h = (ys.max() - ys.min()) / eq_h * np.pi
             wsz = float(max(0.3, min(12.0, ang_w * dist)))
             hsz = float(max(0.5, min(8.0, np.tan(min(ang_h, 1.2)) * dist)))
-            rgba = [*CATEGORY_COLOR[cat], 255]
-            if cat in OBJECT_CYL_CATS:
-                scene.add_geometry(_cyl_y([cx, -H + hsz / 2, cz], wsz / 2, hsz, rgba))
-                ctype = "cylinder"
-            else:
-                scene.add_geometry(_box([cx, -H + hsz / 2, cz], [wsz, hsz, wsz], theta, rgba))
-                ctype = "box"
-            colliders.append({"class": cat, "type": ctype,
-                              "center": [cx, -H + hsz / 2, cz],
-                              "size": [wsz, hsz, wsz], "yaw": float(theta)})
+            ctype = "cylinder" if cat in OBJECT_CYL_CATS else "box"
+            out.append({"class": cat, "type": ctype,
+                        "center": [cx, -H + hsz / 2, cz],
+                        "size": [wsz, hsz, wsz], "yaw": float(theta)})
+    return out
+
+
+def _fuse_colliders(raw, n_views):
+    """S-NeRF型 信頼度融合: 同クラス・近接の検出を1つに束ね、支持視点数→信頼度。
+
+    raw の各要素は {..., "_vp": k}（ワールド座標）。複数視点が同じ壁/物体を見れば
+    位置が重なり、束ねられて confidence=支持視点数/n_views が上がる（重複は平均で1つに）。
+    """
+    clusters = []
+    for c in raw:
+        cx, _, cz = c["center"]
+        best = None
+        for f in clusters:
+            if f["class"] != c["class"]:
+                continue
+            fx, _, fz = f["center0"]
+            # 物体は中心近接、壁はセクタ幅ぶんの許容。
+            thr = max(c["size"][0], 1.5) if c["class"] == "wall" else 2.0
+            if (cx - fx) ** 2 + (cz - fz) ** 2 <= thr * thr:
+                best = f
+                break
+        if best is None:
+            clusters.append({"class": c["class"], "type": c["type"], "yaw": c["yaw"],
+                             "center0": c["center"], "support": {c["_vp"]},
+                             "cs": [c["center"]], "szs": [c["size"]]})
+        else:
+            best["support"].add(c["_vp"])
+            best["cs"].append(c["center"])
+            best["szs"].append(c["size"])
+
+    fused = []
+    for f in clusters:
+        cen = np.mean(np.array(f["cs"], float), axis=0)
+        sz = np.mean(np.array(f["szs"], float), axis=0)
+        fused.append({"class": f["class"], "type": f["type"],
+                      "center": [float(x) for x in cen], "size": [float(x) for x in sz],
+                      "yaw": float(f["yaw"]),
+                      "confidence": round(len(f["support"]) / max(n_views, 1), 3),
+                      "support_views": len(f["support"])})
+    return fused
+
+
+def build_collider_scene(prediction, view_index, viewpoints, camera_height_m=2.5,
+                         eq_w=1024, floor_radius_m=30.0, wall_sectors=64,
+                         min_object_px=80, min_confidence=0.0, progress=None):
+    """多パノを信頼度融合 → 床/壁/物体コライダー（メートル）。(scene, info)。
+
+    各視点の意味equirectから壁/物体を抽出し、GPS(ENU)で共有ワールドへ配置（解析的姿勢は
+    北整列なのでヨー推定不要）。複数視点が見た同じ壁/物体を束ねて信頼度を付ける（S-NeRF型）。
+    """
+    progress = progress or _noop
+    H = float(camera_height_m)
+    vps = sorted({int(v) for v in view_index})
+    V = len(vps)
+
+    # GPSアンカー: 先頭視点を原点とする ENU メートル（east=x, north=z）。
+    try:
+        enu = _viewpoint_enu([viewpoints[vp] for vp in vps]) if V > 1 else np.zeros((1, 3))
+    except (KeyError, IndexError, TypeError):
+        enu = np.zeros((V, 3))  # viewpoints が無い/不整合なら全て原点（単一系扱い）。
+
+    raw = []
+    for k, vp in enumerate(vps):
+        progress("mesh", k, V, f"意味コライダー: 視点 {k + 1}/{V} を抽出 ...")
+        cat_eq = build_semantic_equirect(prediction, view_index, vp, eq_w=eq_w, progress=progress)
+        local = _local_colliders_from_cat_eq(cat_eq, H, floor_radius_m, wall_sectors, min_object_px)
+        ox, oz = float(enu[k][0]), float(enu[k][1])  # east->x, north->z（等高: y移動なし）
+        for c in local:
+            c = dict(c)
+            c["center"] = [c["center"][0] + ox, c["center"][1], c["center"][2] + oz]
+            c["_vp"] = k
+            raw.append(c)
+
+    progress("mesh", V, V, f"{V}視点を信頼度融合 ...")
+    fused = [c for c in _fuse_colliders(raw, V) if c["confidence"] >= min_confidence]
+
+    # --- シーン構築（床=共有1枚, 壁/物体=融合結果。信頼度で不透明度を変える） ---
+    scene = trimesh.Scene()
+    colliders = []
+    R = floor_radius_m
+    # 床は全視点を覆うよう ENU 範囲ぶん広げる。
+    span = float(np.abs(enu[:, :2]).max()) if V > 1 else 0.0
+    fr = R + span
+    scene.add_geometry(_box([0, -H, 0], [2 * fr, 0.1, 2 * fr], 0.0, [*CATEGORY_COLOR["floor"], 255]))
+    colliders.append({"class": "floor", "type": "plane", "center": [0.0, -H, 0.0],
+                      "size": [2 * fr, 0.1, 2 * fr], "yaw": 0.0, "confidence": 1.0,
+                      "support_views": V})
+
+    n_wall = n_obj = 0
+    for c in fused:
+        a = int(90 + 165 * c["confidence"])  # 低信頼=薄い, 高信頼=濃い。
+        rgba = [*CATEGORY_COLOR.get(c["class"], CATEGORY_COLOR["other"]), a]
+        cen, sz = c["center"], c["size"]
+        if c["type"] == "cylinder":
+            scene.add_geometry(_cyl_y(cen, sz[0] / 2, sz[1], rgba))
+        else:
+            scene.add_geometry(_box(cen, sz, c["yaw"], rgba))
+        colliders.append(c | {"center": [float(x) for x in cen]})
+        if c["class"] == "wall":
+            n_wall += 1
+        else:
             n_obj += 1
 
+    confirmed = sum(1 for c in fused if c["support_views"] >= 2)
     info = {
         "representation": "colliders", "method": "colliders",
-        "viewpoints": len(sorted({int(v) for v in view_index})),
-        "camera_height_m": H, "eq_w": eq_w,
-        "collider_counts": {"floor": 1, "wall": n_wall, "object": n_obj},
+        "viewpoints": V, "camera_height_m": H, "eq_w": eq_w,
+        "fusion": "multi_pano_confidence",
+        "collider_counts": {"floor": 1, "wall": n_wall, "object": n_obj,
+                            "multi_view_confirmed": confirmed},
         "colliders": colliders,
         "vertex_count": int(sum(len(m.vertices) for m in scene.geometry.values())),
         "face_count": int(sum(len(m.faces) for m in scene.geometry.values())),

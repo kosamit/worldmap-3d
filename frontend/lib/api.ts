@@ -285,6 +285,7 @@ export interface MultiviewParams {
   tsdfVoxel?: number;
   depthModel?: string | null;
   enhanceInput?: boolean;
+  enhanceMode?: "light" | "esrgan";
   enhanceUpscale?: number;
 }
 
@@ -344,6 +345,7 @@ export async function reconstructMultiview(
   if (params.depthModel) form.append("depth_model", params.depthModel);
   if (params.enhanceInput != null)
     form.append("enhance_input", String(params.enhanceInput));
+  if (params.enhanceMode) form.append("enhance_mode", params.enhanceMode);
   if (params.enhanceUpscale != null)
     form.append("enhance_upscale", String(params.enhanceUpscale));
 

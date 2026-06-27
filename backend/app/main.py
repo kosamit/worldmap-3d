@@ -563,7 +563,9 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
             from . import enhance
             progress("street_view", total_imgs, total_imgs, "入力画像を高精細化中 ...")
             images = enhance.enhance_images(
-                images, upscale=params["enhance_upscale"], progress=progress)
+                images, mode=params["enhance_mode"],
+                upscale=params["enhance_upscale"], progress=progress)
+            _free_cuda()  # ESRGAN等のGPUを解放してからDA3推論
 
         # 1.9 物体除去＋生成補完（LaMa）。推論前に画像から物体を消して穴を描き直す。
         #     こうすると「穴」ではなく自然な背景になり、その深度も推定される。
@@ -733,6 +735,7 @@ def reconstruct_multiview(
     use_ray_pose: bool = Form(True),
     ref_view_strategy: str = Form("saddle_balanced"),
     enhance_input: bool = Form(False),
+    enhance_mode: str = Form("light"),
     enhance_upscale: float = Form(1.0),
     drop_sky: bool = Form(True),
     filter_black_bg: bool = Form(False),
@@ -772,6 +775,7 @@ def reconstruct_multiview(
         "use_ray_pose": bool(use_ray_pose),
         "ref_view_strategy": rvs,
         "enhance_input": bool(enhance_input),
+        "enhance_mode": enhance_mode if enhance_mode in ("light", "esrgan") else "light",
         "enhance_upscale": max(1.0, min(4.0, float(enhance_upscale))),
         "drop_sky": bool(drop_sky),
         "filter_black_bg": bool(filter_black_bg),

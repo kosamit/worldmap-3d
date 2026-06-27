@@ -4,3 +4,4 @@ depth-anything-3
 xformers
 ultralytics
 simple-lama-inpainting
+spandrel

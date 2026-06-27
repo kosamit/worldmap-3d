@@ -67,6 +67,7 @@ interface MultiParams {
   useRayPose: boolean;
   refViewStrategy: string;
   enhanceInput: boolean;
+  enhanceMode: "light" | "esrgan";
   dropSky: boolean;
   filterBlackBg: boolean;
   filterWhiteBg: boolean;
@@ -96,6 +97,7 @@ const FALLBACK_MULTI: MultiParams = {
   useRayPose: true,
   refViewStrategy: "saddle_balanced",
   enhanceInput: false,
+  enhanceMode: "light",
   dropSky: true,
   filterBlackBg: false,
   filterWhiteBg: false,
@@ -221,6 +223,7 @@ export default function Home() {
             useRayPose: m?.use_ray_pose ?? FALLBACK_MULTI.useRayPose,
             refViewStrategy: m?.ref_view_strategy ?? FALLBACK_MULTI.refViewStrategy,
             enhanceInput: FALLBACK_MULTI.enhanceInput,
+            enhanceMode: FALLBACK_MULTI.enhanceMode,
             dropSky: m?.drop_sky ?? FALLBACK_MULTI.dropSky,
             filterBlackBg: m?.filter_black_bg ?? FALLBACK_MULTI.filterBlackBg,
             filterWhiteBg: m?.filter_white_bg ?? FALLBACK_MULTI.filterWhiteBg,
@@ -456,6 +459,7 @@ export default function Home() {
           useRayPose: multi.useRayPose,
           refViewStrategy: multi.refViewStrategy,
           enhanceInput: multi.enhanceInput,
+          enhanceMode: multi.enhanceMode,
           dropSky: multi.dropSky,
           filterBlackBg: multi.filterBlackBg,
           filterWhiteBg: multi.filterWhiteBg,
@@ -724,8 +728,28 @@ export default function Home() {
                       onChange={(e) => setMultiParam("enhanceInput", e.target.checked)}
                       disabled={building3d}
                     />
-                    入力画像を高精細化（ノイズ除去＋シャープ, DA3前）
+                    入力画像を高精細化（DA3前）
                   </label>
+                  {multi.enhanceInput && (
+                    <label className="field">
+                      高精細化の方式
+                      <select
+                        value={multi.enhanceMode}
+                        onChange={(e) =>
+                          setMultiParam(
+                            "enhanceMode",
+                            e.target.value as "light" | "esrgan",
+                          )
+                        }
+                        disabled={building3d}
+                      >
+                        <option value="light">軽量（ノイズ除去＋シャープ・高速）</option>
+                        <option value="esrgan">
+                          Real-ESRGAN（超解像・要process_res↑・重い）
+                        </option>
+                      </select>
+                    </label>
+                  )}
                   <div className="grid2">
                     <label className="field">
                       地点数 (1–8)

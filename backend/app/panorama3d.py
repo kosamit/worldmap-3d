@@ -55,7 +55,8 @@ def _build_equirect_rgbd(prediction, view_index, vp_idx, eq_w=1536):
         valid = np.isfinite(z) & (z > 0)
         rays = np.linalg.inv(K[i]) @ pix  # (3,hw) カメラ座標方向
         cam = rays * z[None, :]  # (3,hw)
-        world = (R @ cam).T + (c2w[:3, 3] - center)  # (hw,3) 中心相対
+        world = (R @ cam).T + (c2w[:3, 3] - center)  # (hw,3) 中心相対（DA3はy下向き）
+        world[:, 1] *= -1.0  # y下向き → y上向き(glTF)。これを忘れると上下逆さまになる
         r = np.linalg.norm(world, axis=1)
         d = world / (r[:, None] + 1e-9)
         lon = np.arctan2(d[:, 0], d[:, 2])  # -pi..pi
@@ -116,7 +117,7 @@ def _inpaint_equirect(color, radius, valid, use_lama=True):
 
 
 def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
-                        inpaint=True, discontinuity_ratio=0.15, edge_factor=0.7,
+                        inpaint=True, discontinuity_ratio=0.5, edge_factor=0.7,
                         max_faces=1_200_000, progress=None):
     """単一視点 equirect RGBD → 穴埋め → 隙間のない球面メッシュ(trimesh.Scene)。"""
     progress = progress or _noop

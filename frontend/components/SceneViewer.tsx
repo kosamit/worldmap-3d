@@ -225,12 +225,20 @@ function Player({
     const c = controls.current;
     if (!c) return;
 
-    // 初回：地面の上にスポーンさせる。
+    // 初回：床の上にスポーン。下から上向きにレイを撃って「最下面（床）」を取る。
+    // 上から下に撃つと、屋内シーンでは天井に当たって天井の上に湧くため不可。
     if (!spawned.current && colliderRef.current && colliderRef.current.length) {
-      const g = groundAt(0, 200, 0);
-      if (g != null) {
-        camera.position.set(0, g + EYE_HEIGHT, 0);
-        lastGroundY.current = g;
+      const colliders = colliderRef.current;
+      rayDown.current.set(
+        new THREE.Vector3(0, -1000, 0),
+        new THREE.Vector3(0, 1, 0),
+      );
+      rayDown.current.far = 5000;
+      const hits = rayDown.current.intersectObjects(colliders, false);
+      const floorY = hits.length ? hits[0].point.y : null;
+      if (floorY != null) {
+        camera.position.set(0, floorY + EYE_HEIGHT, 0);
+        lastGroundY.current = floorY;
       }
       faceHeading();
       spawned.current = true;

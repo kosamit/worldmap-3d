@@ -537,10 +537,11 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
 
         # 2. カメラ姿勢（必要なら深度）。GPU推論は直列化。
         with _infer_lock:
-            if params["method"] == "colliders":
-                # 意味コライダーは深度不要。既知の取得角(heading/pitch/fov)から
+            if params["method"] in ("colliders", "proxy"):
+                # 意味コライダー/プロキシは深度不要。既知の取得角(heading/pitch/fov)から
                 # カメラ姿勢を解析的に構成し DA3 をスキップする（論文の核心: LiDARも深度も
-                # 使わずに歩ける意味3D。docs/new_paper_concept.md §4-5）。
+                # 使わずに歩ける意味3D。docs/new_paper_concept.md §4-5）。proxy は pred を
+                # 使わず equirect 写真から直接プロキシを作る。
                 progress("depth", 1, 1, "既知取得角からカメラ姿勢を構成（DA3不要）")
                 from .colliders import build_analytic_prediction
                 pred = build_analytic_prediction(images, view_angles)
@@ -622,6 +623,15 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                 with _Heartbeat(progress, "mesh", "3D Gaussian生成中", 10.0 + 0.3 * total_imgs):
                     scene, info = build_gaussian_scene(
                         pred, view_index, viewpoints, params, progress=progress)
+            elif params["method"] == "proxy":
+                # DA3-free 本線: equirect写真＋セグメント＋既知カメラ高さで、歩ける床平面＋壁を
+                # 実写テクスチャで張り、見えない床は LaMa 補完。pred は使わない（深度ゼロ依存）。
+                # docs/new_paper_concept.md の DA3-free 主張を見た目つきで実体化。
+                from .proxy3d import build_proxy_scene
+                with _Heartbeat(progress, "mesh", "歩けるプロキシ生成中（DA3不要）", 12.0 + 8.0 * len(viewpoints)):
+                    scene, info = build_proxy_scene(
+                        viewpoints, camera_height_m=params["camera_height_m"],
+                        api_key=api_key, inpaint=params["inpaint"], progress=progress)
             else:
                 # GPSアンカー配置で面を張る（既定）。
                 scene, info = build_multiview_pointcloud(
@@ -819,7 +829,7 @@ def reconstruct_multiview(
         "remove_objects": bool(remove_objects),
         "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
         "inpaint": bool(inpaint),
-        "method": method if method in ("tsdf", "poisson", "panorama", "primitive", "colliders", "gaussian") else "mesh",
+        "method": method if method in ("tsdf", "poisson", "panorama", "primitive", "colliders", "gaussian", "proxy") else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }

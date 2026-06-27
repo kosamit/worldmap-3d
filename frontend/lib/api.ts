@@ -279,7 +279,8 @@ export interface MultiviewParams {
     | "panorama"
     | "primitive"
     | "colliders"
-    | "gaussian";
+    | "gaussian"
+    | "proxy";
   tsdfVoxel?: number;
   depthModel?: string | null;
   enhanceInput?: boolean;

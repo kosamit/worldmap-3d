@@ -399,7 +399,9 @@ export default function Home() {
 
   // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
   // method="tsdf" で TSDF 融合（重なり層を1枚の連続面へ＝ソリッド）。
-  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" | "colliders" | "gaussian" = "mesh") => {
+  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" | "colliders" | "gaussian" | "proxy" = "mesh") => {
+    // proxy(DA3-free)は透視グリッド画像を使わないため最小限に絞り取得を節約する。
+    const isProxy = method === "proxy";
     if (!current) {
       say("先に地図で地点を選んでください", true);
       return;
@@ -425,8 +427,8 @@ export default function Home() {
           lat: current.lat,
           lng: current.lng,
           maxViews: multi.maxViews,
-          headingCount: multi.headingCount,
-          pitchCount: multi.pitchCount,
+          headingCount: isProxy ? 2 : multi.headingCount,
+          pitchCount: isProxy ? 1 : multi.pitchCount,
           radiusM: multi.radiusM,
           confPercentile: multi.confPercentile,
           ensurePercentile: multi.ensurePercentile,
@@ -577,6 +579,15 @@ export default function Home() {
                 title="DA3点群を3D Gaussian Splatting(.splat)へ初期化し、写実 splat をアプリ内で観賞（学習なし・実験）"
               >
                 {building3d ? "生成中..." : "✨ 3DGS（写実splat・実験）"}
+              </button>
+              <button
+                type="button"
+                className="primaryWide"
+                onClick={() => handle3DMulti("proxy")}
+                disabled={!current || building3d}
+                title="DA3不要。equirect写真＋既知カメラ高さで床/壁を実寸プロキシ化し、実写テクスチャ＋LaMa補完で歩ける写実3Dにする（本線）"
+              >
+                {building3d ? "生成中..." : "🚶 歩ける写実マップ（DA3不要・本線）"}
               </button>
             </>
           )}

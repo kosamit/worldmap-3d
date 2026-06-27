@@ -529,39 +529,21 @@ export default function Home() {
             <>
               <button
                 type="button"
-                className="primaryWide"
-                onClick={() => handle3DMulti("mesh")}
-                disabled={!current || building3d}
-                title="周辺の複数Street View地点を集め、DA3マルチビューで整合した高精度メッシュを作ります"
-              >
-                {building3d ? "生成中..." : "★ 高精度3D化（マルチビュー）"}
-              </button>
-              <button
-                type="button"
-                className="primaryWide tsdf"
-                onClick={() => handle3DMulti("tsdf")}
-                disabled={!current || building3d}
-                title="TSDF融合: 重なった深度を1枚の連続面に統合した、よりソリッドな歩ける空間を作ります（やや重い）"
-              >
-                {building3d ? "生成中..." : "▣ TSDF 3D化（ソリッド）"}
-              </button>
-              <button
-                type="button"
-                className="primaryWide poisson"
-                onClick={() => handle3DMulti("poisson")}
-                disabled={!current || building3d}
-                title="Poisson面再構成: 穴を水密面で塞ぎ、柱の裏など見えない部分も補間で埋めます（推測込み）"
-              >
-                {building3d ? "生成中..." : "◐ Poisson 3D化（穴埋め）"}
-              </button>
-              <button
-                type="button"
                 className="primaryWide pano"
                 onClick={() => handle3DMulti("panorama")}
                 disabled={!current || building3d}
-                title="この1地点の360°を生成AI(LaMa)で穴埋めし、隙間のない球面空間を作って見回せます"
+                title="この1地点の360°を生成AI(LaMa)で穴埋めし、隙間のない球面空間を作って見回せます（推奨）"
               >
-                {building3d ? "生成中..." : "● パノラマ生成3D（隙間なし）"}
+                {building3d ? "生成中..." : "● パノラマ生成3D（推奨・隙間なし）"}
+              </button>
+              <button
+                type="button"
+                className="primaryWide"
+                onClick={() => handle3DMulti("mesh")}
+                disabled={!current || building3d}
+                title="周辺の複数Street View地点を集め、DA3マルチビューで整合したメッシュを作ります"
+              >
+                {building3d ? "生成中..." : "★ マルチビュー3D化"}
               </button>
             </>
           )}

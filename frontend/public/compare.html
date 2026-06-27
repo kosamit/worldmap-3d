@@ -29,6 +29,7 @@ const cx = Number(qs.get("cx") ?? 0);          // カメラ水平オフセット
 const cz = Number(qs.get("cz") ?? 0);          // カメラ水平オフセットZ(+で南へ後退)
 const psize = Number(qs.get("psize") ?? 0.05); // 点サイズ(m)
 const onlypano = qs.get("onlypano");           // 指定時はその名前を含む pano だけ表示(PanoFader相当)
+const panofade = qs.get("panofade");           // "x,z;x,z;.." pano中心。SceneViewerのPanoFaderを再現
 const W = Number(qs.get("w") ?? 960), H = Number(qs.get("h") ?? 960);
 
 const canvas = document.getElementById("c");
@@ -69,6 +70,31 @@ new GLTFLoader().load(glb, (gltf) => {
   camera.position.set(cx, camY, cz);
   camera.lookAt(cx + Math.sin(h), camY, cz - Math.cos(h));
   window.camY = camY;
+
+  // PanoFader 再現: 最近傍 pano を不透明、他は (dmin/d)^3 で減衰（SceneViewer と同式）。
+  if (panofade) {
+    const centers = panofade.split(";").map((s) => s.split(",").map(Number));
+    const meshes = [];
+    gltf.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      const nm = o.name || (o.parent && o.parent.name) || "";
+      const ci = centers.findIndex((_, i) => nm.includes("pano_" + i));
+      if (ci >= 0) { o.userData.ci = ci; o.material.transparent = true; meshes.push(o); }
+    });
+    const d = meshes.map((o) => {
+      const c = centers[o.userData.ci];
+      return Math.hypot(cx - c[0], cz - c[1]);
+    });
+    const dmin = Math.min(...d);
+    const SOFT = 2.0;   // SceneViewer と同じ距離底上げ（中心で最近傍が消えないように）
+    meshes.forEach((o, i) => {
+      const w = Math.min(1, Math.pow((dmin + SOFT) / (d[i] + SOFT), 3));
+      o.material.opacity = w;
+      o.material.depthWrite = w > 0.5;
+      o.visible = w > 0.02;
+    });
+    window.fadeW = meshes.map((o) => +o.material.opacity.toFixed(2));
+  }
   renderer.render(scene, camera);
   window.ready = true;
 }, undefined, (e) => { window.loadError = String(e); });

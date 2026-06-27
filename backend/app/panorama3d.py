@@ -20,14 +20,17 @@ from .reconstruct_da3 import (
     _level_ground,
     _metric_scale,
     _noop,
+    _umeyama_2d,
+    _viewpoint_enu,
 )
 
 
-def _build_equirect_rgbd(prediction, view_index, vp_idx, eq_w=1536):
+def _build_equirect_rgbd(prediction, view_index, vp_idx, eq_w=1536, center=None):
     """指定視点の透視ビュー群を equirect(カラー/半径距離/有効マスク) に z-buffer 統合。
 
-    返り値: color(H,W,3 uint8), radius(H,W float, 中心からの距離), valid(H,W bool)。
+    返り値: color(H,W,3 uint8), radius(H,W float, 中心からの距離), valid(H,W bool), center。
     equirect 規約: x=lon(0=+Z前方, 右回り), y=lat(上+)。
+    center 指定時は equirect の原点をその座標に固定（複数パノを共通座標に並べる用）。
     """
     depth = prediction["depth"].astype(np.float64)
     K = prediction["intrinsics"].astype(np.float64)
@@ -141,22 +144,30 @@ def _eq_layer(color, radius, valid, scale, discontinuity):
     return verts.astype(np.float32), faces, rgba
 
 
-def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
-                        inpaint=True, layered=True, front_discontinuity=0.12,
-                        back_discontinuity=0.5, max_faces=1_200_000, progress=None):
-    """単一視点 equirect RGBD → 穴埋め＋レイヤード遮蔽補完 → 球面メッシュ(trimesh.Scene)。
+def _global_scale(prediction, view_index, viewpoints, radius_hint=None):
+    """視点間距離からメートル/単位スケールを推定。単一視点等で不能なら半径フォールバック。"""
+    n = prediction["depth"].shape[0]
+    ext = prediction["extrinsics"]
+    centers = np.array([np.linalg.inv(_as_homogeneous44(ext[i]))[:3, 3] for i in range(n)])
+    scale = _metric_scale(centers, list(view_index), viewpoints)
+    if not scale or not np.isfinite(scale) or scale <= 0:
+        scale = (15.0 / radius_hint) if radius_hint else None
+    return scale
 
-    layered=True: 前景は不連続でしっかり切って独立させ（柱が背景へ伸びない）、その背後を
-    別レイヤーとして生成補完し奥に配置する。横にずれる/回り込むと前景の裏の背景が見え、
-    奥行き(視差)が出る。
-      front_discontinuity: 前景の分断しきい値（小さいほど引き伸ばしを強く切る）。
-      back_discontinuity:  背景レイヤーの分断しきい値（背景は滑らかなので緩め）。
+
+def _pano_geometry(prediction, view_index, viewpoints, vp_idx, scale=None, eq_w=1536,
+                   inpaint=True, layered=True, front_discontinuity=0.12,
+                   back_discontinuity=0.5, progress=None):
+    """1視点パノラマの (verts(視点中心相対メートル), faces, rgba, center(DA3単位), scale, info)。
+
+    leveling/centering はしない（複数パノを並べる呼び出し側でまとめて行う）。
+    verts は視点中心を原点とするメートル座標 → 配置時は (center - ref) * scale で平行移動。
     """
     import cv2
 
     progress = progress or _noop
     progress("mesh", 0, 1, "パノラマ統合（equirect RGBD）...")
-    color, radius, valid, _ = _build_equirect_rgbd(prediction, view_index, vp_idx, eq_w)
+    color, radius, valid, center = _build_equirect_rgbd(prediction, view_index, vp_idx, eq_w)
 
     filled_frac = float((~valid).mean())
     if inpaint:
@@ -164,14 +175,9 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
         color, radius = _inpaint_equirect(color, radius, valid)
         valid = np.ones_like(valid)
 
-    # スケール（メートル化 or 半径正規化）
-    n = prediction["depth"].shape[0]
-    ext = prediction["extrinsics"]
-    centers = np.array([np.linalg.inv(_as_homogeneous44(ext[i]))[:3, 3] for i in range(n)])
-    scale = _metric_scale(centers, list(view_index), viewpoints)
-    if not scale or not np.isfinite(scale) or scale <= 0:
+    if scale is None:
         rad95 = float(np.percentile(radius[valid], 95)) or 1.0
-        scale = 15.0 / rad95
+        scale = _global_scale(prediction, view_index, viewpoints, radius_hint=rad95)
 
     # 前景レイヤー（不連続でしっかり切る＝柱が背景へ伸びない）
     progress("mesh", 0, 1, "球面メッシュ生成（前景）...")
@@ -198,11 +204,24 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
             bv, bf, brgba = _eq_layer(bg_color, rmax, fg, scale, back_discontinuity)
             all_v.append(bv); all_f.append(bf + voff); all_c.append(brgba)
 
-    verts = np.concatenate(all_v, 0)
+    verts = np.concatenate(all_v, 0).astype(np.float32)
     faces = np.concatenate(all_f, 0)
     rgba = np.concatenate(all_c, 0)
+    info = {"hole_filled_frac": round(filled_frac, 3), "occlusion_fill_frac": round(fg_frac, 3)}
+    return verts, faces, rgba, np.asarray(center, np.float64), scale, info
 
-    verts, _ = _level_ground(verts.astype(np.float32))
+
+def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
+                        inpaint=True, layered=True, front_discontinuity=0.12,
+                        back_discontinuity=0.5, max_faces=1_200_000, progress=None):
+    """単一視点 equirect RGBD → 穴埋め＋レイヤード遮蔽補完 → 球面メッシュ(trimesh.Scene)。"""
+    progress = progress or _noop
+    verts, faces, rgba, _c, _s, info = _pano_geometry(
+        prediction, view_index, viewpoints, vp_idx, scale=None, eq_w=eq_w,
+        inpaint=inpaint, layered=layered, front_discontinuity=front_discontinuity,
+        back_discontinuity=back_discontinuity, progress=progress)
+
+    verts, _ = _level_ground(verts)
     ref = np.zeros(len(verts), bool)
     if len(faces):
         ref[np.unique(faces)] = True
@@ -214,8 +233,96 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
     if max_faces and len(m.faces) > max_faces:
         m = _decimate_mesh(m, max_faces)
     scene = trimesh.Scene(); scene.add_geometry(m)
-    info = {"representation": "mesh", "method": "panorama", "vertex_count": int(len(m.vertices)),
-            "face_count": int(len(m.faces)), "viewpoints": 1, "eq_w": eq_w,
-            "hole_filled_frac": round(filled_frac, 3), "inpaint": bool(inpaint),
-            "layered": bool(layered), "occlusion_fill_frac": round(fg_frac, 3)}
+    info.update({"representation": "mesh", "method": "panorama",
+                 "vertex_count": int(len(m.vertices)), "face_count": int(len(m.faces)),
+                 "viewpoints": 1, "eq_w": eq_w, "inpaint": bool(inpaint),
+                 "layered": bool(layered)})
+    return scene, info
+
+
+def build_multipano_scene(prediction, view_index, viewpoints, eq_w=1536, inpaint=True,
+                          layered=True, front_discontinuity=0.12, back_discontinuity=0.5,
+                          max_faces_per_pano=500_000, progress=None):
+    """複数視点パノラマを共通座標に配置 → 連続的に歩ける「つなぎ目のない」シーン。
+
+    各視点の深度パノラマメッシュを実位置(視点間の実距離スケール)に並べる。隣の
+    パノラマが遮蔽の裏を実際に撮っているので、移動すると本物の視差で裏が見える。
+    返り値の info["panos"] = [{"name","center":[x,y,z]}] はビューワーの距離フェード用。
+    """
+    progress = progress or _noop
+    vps = sorted({int(v) for v in view_index})
+    if len(vps) < 2:
+        return build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=vps[0],
+                                   eq_w=eq_w, inpaint=inpaint, layered=layered,
+                                   front_discontinuity=front_discontinuity,
+                                   back_discontinuity=back_discontinuity, progress=progress)
+
+    scale = _global_scale(prediction, view_index, viewpoints)
+
+    # GPSアンカー: 視点の水平配置は実GPS(ENU)で固定し、DA3ポーズドリフトから切り離す。
+    # Street Viewは全カメラがほぼ同じ高さ → 視点間の上下差はDA3誤差なので等高にする。
+    p_arr = _viewpoint_enu([viewpoints[vp] for vp in vps])  # (V,3) ENU メートル
+    p_vp = {vp: p_arr[k] for k, vp in enumerate(vps)}
+
+    geoms = []          # [vp, verts(視点中心相対メートル), faces, rgba]
+    centers = {}        # vp -> DA3 center（ヨー整列の推定に使う）
+    infos = []
+    for k, vp in enumerate(vps):
+        progress("mesh", k, len(vps), f"パノラマ {k + 1}/{len(vps)} 構築 ...")
+        v, f, c, ctr, sc, info = _pano_geometry(
+            prediction, view_index, viewpoints, vp, scale=scale, eq_w=eq_w,
+            inpaint=inpaint, layered=layered, front_discontinuity=front_discontinuity,
+            back_discontinuity=back_discontinuity, progress=progress)
+        scale = sc  # 最初のパノで確定したスケールを以降で共有
+        centers[vp] = ctr
+        geoms.append([vp, v, f, c])
+        infos.append(info)
+
+    # DA3水平面(x,z)→ENU(east,north)のヨー回転を1つ推定（全パノ共通）。
+    qa = np.array([centers[vp] for vp in vps])
+    _, R2, _ = _umeyama_2d(qa[:, [0, 2]], p_arr[:, [0, 2]])
+
+    def _place(verts, vp):
+        # verts: 視点中心相対メートル(y-up)。水平をENUへ回し、ENU実位置へ。高さは等高(0)。
+        en = (R2 @ verts[:, [0, 2]].T).T  # (M,2) east,north
+        x = en[:, 0] + p_vp[vp][0]
+        z = -(en[:, 1] + p_vp[vp][1])     # glTF z = -north
+        return np.stack([x, verts[:, 1], z], -1).astype(np.float32)
+
+    for g in geoms:
+        g[1] = _place(g[1], g[0])
+
+    # leveling/centering は全体で1回（パノ間の整合を保つため）。視点原点も一緒に変換。
+    counts = [len(g[1]) for g in geoms]
+    total = sum(counts)
+    vp_origins = np.array(
+        [[p_vp[vp][0], 0.0, -p_vp[vp][1]] for vp in vps], np.float32)
+    allv = np.concatenate([g[1] for g in geoms] + [vp_origins], 0)
+    allv, _ = _level_ground(allv)
+    med = np.median(allv[:total], axis=0)
+    allv = (allv - med).astype(np.float32)
+    origins_final = allv[total:]
+
+    scene = trimesh.Scene()
+    pano_meta = []
+    idx = 0
+    for (vp, _v, f, c), cnt, k in zip(geoms, counts, range(len(geoms))):
+        vv = allv[idx:idx + cnt]; idx += cnt
+        m = trimesh.Trimesh(vertices=vv, faces=f, vertex_colors=c, process=False)
+        m.remove_unreferenced_vertices()
+        m = _drop_small_components(m)
+        if max_faces_per_pano and len(m.faces) > max_faces_per_pano:
+            m = _decimate_mesh(m, max_faces_per_pano)
+        name = f"pano_{vp}"
+        scene.add_geometry(m, geom_name=name)
+        pano_meta.append({"name": name,
+                          "center": [float(x) for x in origins_final[k]]})
+
+    info = {"representation": "mesh", "method": "multipano",
+            "vertex_count": int(sum(len(g.vertices) for g in scene.geometry.values())),
+            "face_count": int(sum(len(g.faces) for g in scene.geometry.values())),
+            "viewpoints": len(vps), "eq_w": eq_w, "inpaint": bool(inpaint),
+            "layered": bool(layered), "panos": pano_meta,
+            "hole_filled_frac": round(float(np.mean([i["hole_filled_frac"] for i in infos])), 3),
+            "occlusion_fill_frac": round(float(np.mean([i["occlusion_fill_frac"] for i in infos])), 3)}
     return scene, info

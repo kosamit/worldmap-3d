@@ -205,8 +205,9 @@ def config():
         "multiview_available": active_backend() == "da3",
         "multiview_default_model": depth_da3.DA3_MULTIVIEW_MODEL_ID,
         "multiview_model_presets": [
+            {"id": "depth-anything/DA3-SMALL", "label": "DA3 Small（最省メモリ・高速）"},
+            {"id": "depth-anything/DA3-BASE", "label": "DA3 Base（medium相当・軽い）"},
             {"id": "depth-anything/DA3-LARGE", "label": "DA3 Large（推奨・カメラ対応）"},
-            {"id": "depth-anything/DA3-BASE", "label": "DA3 Base（軽い）"},
             {"id": "depth-anything/DA3-GIANT", "label": "DA3 Giant（最高品質・重い）"},
         ],
         "multiview_defaults": {
@@ -508,6 +509,18 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
         hc = params["heading_count"]
         headings = [i * 360.0 / hc for i in range(hc)]
         pitches = _pitch_rows(params["pitch_count"])  # 上下方向の段（天地を埋める）
+
+        # つなぎ目なし(マルチパノ)は地点数を保ちたいので、合計枚数は「段数を削って」
+        # 抑える（360方向は維持）。重い72枚で推論がスタックする問題への対処。
+        if params["method"] == "panorama" and params["max_views"] >= 2:
+            target = 40
+            pc = params["pitch_count"]
+            while pc > 1 and params["max_views"] * hc * len(_pitch_rows(pc)) > target:
+                pc -= 1
+            pitches = _pitch_rows(pc)
+            progress("street_view", 0, 1,
+                     f"つなぎ目なし: 段数を{params['pitch_count']}→{pc}に抑えて"
+                     f"合計枚数を軽量化（地点数は維持）")
 
         # 自動制限：総画像枚数(地点数×方向数×段数)が GPU 予算を超えないよう地点数を抑える。
         per_vp = hc * len(pitches)

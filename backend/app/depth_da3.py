@@ -23,6 +23,14 @@ DA3_MULTIVIEW_MODEL_ID = os.environ.get(
     "DA3_MULTIVIEW_MODEL", "depth-anything/DA3-LARGE"
 )
 
+# 選択可能なマルチビューモデル（小さいほど省メモリ・高速・精度↓）。
+# いずれもポーズ推定対応（DA3METRIC/MONO は深度のみで不可）。
+DA3_MULTIVIEW_MODELS = [
+    {"id": "depth-anything/DA3-SMALL", "label": "SMALL（最省メモリ・高速）"},
+    {"id": "depth-anything/DA3-BASE", "label": "BASE（中・medium相当）"},
+    {"id": "depth-anything/DA3-LARGE", "label": "LARGE（高精度・既定）"},
+]
+
 # モデルIDごとにロード済みモデルをキャッシュ（切替時に再ロードできるよう dict 化）。
 _models: dict[str, object] = {}
 _EPS = 1e-6

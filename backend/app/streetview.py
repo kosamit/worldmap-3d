@@ -39,6 +39,7 @@ def fetch_streetview(
     size: str = DEFAULT_SIZE,
     api_key: str | None = None,
     pano: str | None = None,
+    enhance: str | None = None,
 ) -> tuple[Image.Image, float]:
     """(PIL.Image RGB, 使用した fov) を返す。失敗時は ValueError。
 
@@ -46,6 +47,13 @@ def fetch_streetview(
     取得済み画像はディスクにキャッシュし、同条件の再取得を避けて API 課金を抑える。
     """
     cpath = _sv_cache_path(pano, lat, lng, heading, pitch, fov, size)
+    # 高精細(enhance)版は別ファイルにキャッシュ。フロント・3Dで同条件なら共有される。
+    epath = cpath.with_name(cpath.stem + f".{enhance}.jpg") if enhance else None
+    if enhance and _SV_CACHE_ENABLED and epath.exists():
+        try:
+            return Image.open(io.BytesIO(epath.read_bytes())).convert("RGB"), fov
+        except Exception:  # noqa: BLE001 - 壊れていたら作り直す
+            pass
     content: bytes | None = None
     if _SV_CACHE_ENABLED and cpath.exists():
         try:
@@ -94,6 +102,16 @@ def fetch_streetview(
         image = Image.open(io.BytesIO(content)).convert("RGB")
     except Exception as exc:  # noqa: BLE001 - 外部レスポンスの破損を明示的に握る
         raise ValueError(f"Street View 画像のデコードに失敗: {exc}") from exc
+
+    if enhance:
+        from . import enhance as _enh
+        image = _enh.enhance_one(image, mode=enhance)
+        if _SV_CACHE_ENABLED and epath is not None:
+            try:
+                _SV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                image.save(epath, format="JPEG", quality=92)
+            except Exception:  # noqa: BLE001
+                pass
 
     return image, fov
 

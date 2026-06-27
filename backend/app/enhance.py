@@ -14,12 +14,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import threading
+
 import numpy as np
 
 from .reconstruct_da3 import _noop
 
 _ESRGAN_WEIGHTS = Path(__file__).resolve().parent.parent / "data/models/RealESRGAN_x4plus.pth"
 _esrgan_model = None
+_gpu_lock = threading.Lock()  # GPUモデルはスレッド安全でないので逐次化（equirectは並列取得）
+
+
+def unload() -> None:
+    """ESRGAN を VRAM から解放（公開）。タイル単位処理の後にまとめて呼ぶ。"""
+    _unload_esrgan()
+
+
+def enhance_one(im, mode="esrgan"):
+    """単一 PIL.Image を高精細化して返す（モデルは保持＝逐次再利用、解放は unload()）。"""
+    from PIL import Image
+
+    rgb = np.asarray(im.convert("RGB"))
+    if mode == "esrgan":
+        with _gpu_lock:
+            res = _esrgan_one(rgb)
+    else:
+        res = _light_one(rgb, True, True, 1)
+    return Image.fromarray(res)
 
 
 def _light_one(rgb, denoise, sharpen, upscale):

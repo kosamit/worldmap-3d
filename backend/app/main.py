@@ -552,20 +552,19 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                     image, _ = _fetch_streetview_retry(
                         vp["lat"], vp["lng"], heading=h, pitch=p,
                         fov=params["fov"], api_key=api_key, pano=vp.get("pano_id"),
+                        # 高精細化はタイル取得時に実施＝フロントの高精細パノと共有キャッシュ。
+                        enhance=(params["enhance_mode"] if params["enhance_input"] else None),
                     )
                     images.append(image)
                     view_index.append(vi)
         progress("street_view", total_imgs, total_imgs,
                  f"{len(viewpoints)}地点×{hc}方向×{len(pitches)}段 を取得")
 
-        # 1.8 入力画像の高精細化（DA3前）。JPEGノイズ除去＋シャープで頂点色をクリーンに。
+        # 1.8 高精細化は各タイル取得時に済んでいる。ESRGANのGPUを解放してからDA3推論。
         if params["enhance_input"]:
             from . import enhance
-            progress("street_view", total_imgs, total_imgs, "入力画像を高精細化中 ...")
-            images = enhance.enhance_images(
-                images, mode=params["enhance_mode"],
-                upscale=params["enhance_upscale"], progress=progress)
-            _free_cuda()  # ESRGAN等のGPUを解放してからDA3推論
+            enhance.unload()
+            _free_cuda()
 
         # 1.9 物体除去＋生成補完（LaMa）。推論前に画像から物体を消して穴を描き直す。
         #     こうすると「穴」ではなく自然な背景になり、その深度も推定される。
@@ -912,9 +911,9 @@ def streetview_pano(
     多数の狭角タイルを再投影して高精細にする。hi=True で更に狭角タイルを多数集め、
     out_width も上げて Google の実解像度で高精細化する（同じビューワーで見回せる）。
     """
-    # hi は26枚(fov55)の実解像度に見合う out_width 4096 で鮮明化（過剰補間を避ける）。
+    # hi は各タイルをESRGANで拡大(640→1536)するので、それを活かす out_width で再投影。
     if hi:
-        out_width = 4096
+        out_width = 6144
     else:
         out_width = max(1024, min(4096, out_width))
     out_dir = storage.pano_dir(pano_id)
@@ -925,7 +924,8 @@ def streetview_pano(
     if not equirect_path.exists():
         try:
             image = build_equirectangular(
-                lat, lng, api_key=api_key, pano=pano_id, out_width=out_width, hi=hi
+                lat, lng, api_key=api_key, pano=pano_id, out_width=out_width,
+                enhance=("esrgan" if hi else None),
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc))

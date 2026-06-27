@@ -24,18 +24,8 @@ SOURCE_FOV = 62.0
 POLE_FOV = 90.0
 
 
-def _source_views(hi: bool = False) -> list[tuple[float, float, float]]:
+def _source_views() -> list[tuple[float, float, float]]:
     views: list[tuple[float, float, float]] = []
-    if hi:
-        # 高精細(26枚): 通常と同じ 8方位×3仰角＋上下 だが、fovを少し狭めて(ズーム)
-        # 実解像度を稼ぎ、out_width も上げて鮮明化する。45°間隔に対し fov55 は約10°重なり
-        # で隙間なし。
-        for heading in range(0, 360, 45):  # 8 方位
-            for pitch in (-45.0, 0.0, 45.0):
-                views.append((float(heading), pitch, 55.0))
-        views.append((0.0, 90.0, 75.0))   # 真上
-        views.append((0.0, -90.0, 75.0))  # 真下
-        return views
     for heading in range(0, 360, 45):  # 8 方位
         for pitch in (-45.0, 0.0, 45.0):
             views.append((float(heading), pitch, SOURCE_FOV))
@@ -66,15 +56,16 @@ def build_equirectangular(
     pano: str | None = None,
     out_width: int = 2560,
     tile_size: int = 640,
-    hi: bool = False,
+    enhance: str | None = None,
 ) -> Image.Image:
     """複数タイルを取得して equirectangular 画像(RGB)を返す。
 
-    hi=True で狭角タイルを多数集め、Google の実解像度で高精細化する（GPU不要）。
+    enhance="esrgan"|"light" で各タイルを高精細化（fetch_streetview がキャッシュ）。
+    同条件のタイルは 3D化側と共有キャッシュされる。
     """
     out_w = out_width
     out_h = out_width // 2
-    views = _source_views(hi=hi)
+    views = _source_views()
 
     def _fetch(view: tuple[float, float, float]) -> np.ndarray:
         heading, pitch, fov = view
@@ -87,11 +78,15 @@ def build_equirectangular(
             size=f"{tile_size}x{tile_size}",
             api_key=api_key,
             pano=pano,
+            enhance=enhance,
         )
         return np.asarray(image, dtype=np.uint8)
 
     with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
         tiles = list(pool.map(_fetch, views))
+    if enhance:
+        from . import enhance as _enh
+        _enh.unload()  # タイル高精細化に使った ESRGAN を解放
 
     # 出力ピクセルごとのワールド方向
     xs = (np.arange(out_w) + 0.5) / out_w
@@ -106,9 +101,10 @@ def build_equirectangular(
 
     out = np.zeros((out_h, out_w, 3), dtype=np.uint8)
     best = np.full((out_h, out_w), -1.0)  # cz が大きい(視点中心に近い)ほど優先
-    half = tile_size / 2.0
 
     for (heading, pitch, fov), tile in zip(views, tiles):
+        ts = tile.shape[0]          # 実タイル解像度（enhanceで640→拡大される）
+        half = ts / 2.0
         forward, right, up = _basis(heading, pitch)
         focal = half / np.tan(np.radians(fov) / 2.0)
         cx = dx * right[0] + dy * right[1] + dz * right[2]
@@ -117,10 +113,10 @@ def build_equirectangular(
         safe = np.where(cz > 1e-3, cz, 1.0)
         u = half + focal * (cx / safe)
         v = half - focal * (cy / safe)
-        inside = (cz > 1e-3) & (u >= 0) & (u < tile_size) & (v >= 0) & (v < tile_size)
+        inside = (cz > 1e-3) & (u >= 0) & (u < ts) & (v >= 0) & (v < ts)
         take = inside & (cz > best)
-        ui = np.clip(u, 0, tile_size - 1).astype(np.int32)
-        vi = np.clip(v, 0, tile_size - 1).astype(np.int32)
+        ui = np.clip(u, 0, ts - 1).astype(np.int32)
+        vi = np.clip(v, 0, ts - 1).astype(np.int32)
         sampled = tile[vi, ui]
         out[take] = sampled[take]
         best[take] = cz[take]

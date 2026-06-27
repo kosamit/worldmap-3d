@@ -506,24 +506,25 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
     try:
         # 1. 近接視点を収集し各視点から透視画像をサンプル（フェーズ: street_view）
         progress("street_view", 0, 1, "周辺の Street View 地点を収集中 ...")
-        hc = params["heading_count"]
-        headings = [i * 360.0 / hc for i in range(hc)]
-        pitches = _pitch_rows(params["pitch_count"])  # 上下方向の段（天地を埋める）
+        # 取得グリッドと高精細化方式を手法ごとに決める。
+        if params["method"] == "panorama":
+            # フロントの高精細パノと「完全に同じ」グリッド(8方位×3仰角＋上下, fov62/90)で
+            # 取得 → 同一キャッシュキーになり、フロントで作った高精細タイルをそのまま流用。
+            # 3D化は常に高精細（未生成ならここで生成、既存ならキャッシュ即時）。
+            from .equirect import _source_views
+            view_list = _source_views()
+            enhance_mode = "esrgan"
+            grid_desc = f"{len(view_list)}方向(パノ共有グリッド)"
+        else:
+            hc = params["heading_count"]
+            headings = [i * 360.0 / hc for i in range(hc)]
+            pitches = _pitch_rows(params["pitch_count"])  # 上下方向の段（天地を埋める）
+            view_list = [(h, p, params["fov"]) for h in headings for p in pitches]
+            enhance_mode = params["enhance_mode"] if params["enhance_input"] else None
+            grid_desc = f"{hc}方向×{len(pitches)}段"
+        per_vp = len(view_list)
 
-        # つなぎ目なし(マルチパノ)は地点数を保ちたいので、合計枚数は「段数を削って」
-        # 抑える（360方向は維持）。重い72枚で推論がスタックする問題への対処。
-        if params["method"] == "panorama" and params["max_views"] >= 2:
-            target = 40
-            pc = params["pitch_count"]
-            while pc > 1 and params["max_views"] * hc * len(_pitch_rows(pc)) > target:
-                pc -= 1
-            pitches = _pitch_rows(pc)
-            progress("street_view", 0, 1,
-                     f"つなぎ目なし: 段数を{params['pitch_count']}→{pc}に抑えて"
-                     f"合計枚数を軽量化（地点数は維持）")
-
-        # 自動制限：総画像枚数(地点数×方向数×段数)が GPU 予算を超えないよう地点数を抑える。
-        per_vp = hc * len(pitches)
+        # 自動制限：総画像枚数(地点数×枚数/地点)が GPU 予算を超えないよう地点数を抑える。
         budget_views = max(1, MAX_MULTIVIEW_IMAGES // per_vp)
         eff_max_views = min(params["max_views"], budget_views)
         capped = eff_max_views < params["max_views"]
@@ -544,24 +545,24 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
         images = []
         view_index = []
         for vi, vp in enumerate(viewpoints):
-            for h in headings:
-                for p in pitches:
-                    done = len(images)
-                    progress("street_view", done, total_imgs,
-                             f"Street View 取得 {done + 1}/{total_imgs}（{len(viewpoints)}地点）")
-                    image, _ = _fetch_streetview_retry(
-                        vp["lat"], vp["lng"], heading=h, pitch=p,
-                        fov=params["fov"], api_key=api_key, pano=vp.get("pano_id"),
-                        # 高精細化はタイル取得時に実施＝フロントの高精細パノと共有キャッシュ。
-                        enhance=(params["enhance_mode"] if params["enhance_input"] else None),
-                    )
-                    images.append(image)
-                    view_index.append(vi)
+            for (h, p, vfov) in view_list:
+                done = len(images)
+                progress("street_view", done, total_imgs,
+                         f"Street View 取得 {done + 1}/{total_imgs}（{len(viewpoints)}地点）"
+                         + ("・高精細化" if enhance_mode else ""))
+                image, _ = _fetch_streetview_retry(
+                    vp["lat"], vp["lng"], heading=h, pitch=p,
+                    fov=vfov, api_key=api_key, pano=vp.get("pano_id"),
+                    # 高精細化はタイル取得時に実施＝フロントの高精細パノと共有キャッシュ。
+                    enhance=enhance_mode,
+                )
+                images.append(image)
+                view_index.append(vi)
         progress("street_view", total_imgs, total_imgs,
-                 f"{len(viewpoints)}地点×{hc}方向×{len(pitches)}段 を取得")
+                 f"{len(viewpoints)}地点×{grid_desc} を取得")
 
         # 1.8 高精細化は各タイル取得時に済んでいる。ESRGANのGPUを解放してからDA3推論。
-        if params["enhance_input"]:
+        if enhance_mode:
             from . import enhance
             enhance.unload()
             _free_cuda()

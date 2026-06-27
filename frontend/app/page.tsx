@@ -501,7 +501,7 @@ export default function Home() {
   const handleEnhanceView = useCallback(async () => {
     if (!current) return;
     setEnhancing(true);
-    say("このパノラマを高精細化中（狭角タイルを多数取得）...");
+    say("このパノラマを高精細化中（26枚をESRGANで超解像）...");
     try {
       const pano = await fetchPano(backend, { panoId: current.panoId, hi: true });
       setEquirect(pano.equirect);
@@ -582,7 +582,7 @@ export default function Home() {
             className="primaryWide"
             onClick={handleEnhanceView}
             disabled={!current || enhancing}
-            title="今のパノラマを狭角タイルで作り直して高精細化し、その場で見回せます"
+            title="今のパノラマの26枚をESRGANで超解像して高精細化し、その場で見回せます"
           >
             {enhancing ? "高精細化中..." : "🔍 このパノラマを高精細化"}
           </button>

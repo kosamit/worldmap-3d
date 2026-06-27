@@ -13,7 +13,7 @@ import {
 } from "@/lib/api";
 import type { LatLng } from "@/lib/geo";
 import TourViewer, { type PanoLink } from "@/components/TourViewer";
-import SceneViewer from "@/components/SceneViewer";
+import SceneViewer, { type PanoInfo } from "@/components/SceneViewer";
 import MapPicker from "@/components/MapPicker";
 
 interface PanoState {
@@ -151,6 +151,8 @@ export default function Home() {
   const [meshGlb, setMeshGlb] = useState<string | null>(null);
   // 3D化した時点でパノラマで向いていた方位（北=0,時計回り）。3D初期視線に使う。
   const [sceneHeadingDeg, setSceneHeadingDeg] = useState<number | null>(null);
+  // 複数パノ（つなぎ目なし）の各パノ中心。ビューワーの距離フェードに渡す。
+  const [scenePanos, setScenePanos] = useState<PanoInfo[] | undefined>(undefined);
   const [building3d, setBuilding3d] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -397,6 +399,7 @@ export default function Home() {
       );
       setSceneHeadingDeg(facingRef.current);
       setMeshGlb(glbUrl(backend, meta));
+      setScenePanos((meta as { panos?: PanoInfo[] }).panos);
       setMode("mesh");
       say(`3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
     } catch (err) {
@@ -464,6 +467,7 @@ export default function Home() {
       );
       setSceneHeadingDeg(facingRef.current);
       setMeshGlb(glbUrl(backend, meta));
+      setScenePanos((meta as { panos?: PanoInfo[] }).panos);
       setMode("mesh");
       {
         const vp = meta.viewpoints ?? "?";
@@ -1074,7 +1078,11 @@ export default function Home() {
 
       <main className="main">
         {mounted && mode === "mesh" ? (
-          <SceneViewer glbUrl={meshGlb} initialHeadingDeg={sceneHeadingDeg} />
+          <SceneViewer
+            glbUrl={meshGlb}
+            initialHeadingDeg={sceneHeadingDeg}
+            panos={scenePanos}
+          />
         ) : (
           mounted && (
             <TourViewer

@@ -59,27 +59,40 @@ function convertVertexColorsToLinear(geom: THREE.BufferGeometry) {
   (attr as any)._srgbFixed = true;
 }
 
+export interface PanoInfo {
+  name: string;
+  center: [number, number, number];
+}
+
 function Model({
   url,
+  panos,
   onReady,
 }: {
   url: string;
+  panos?: PanoInfo[];
   onReady: (meshes: THREE.Mesh[]) => void;
 }) {
   const { scene } = useGLTF(url);
   const object = useMemo(() => {
     const cloned = scene.clone(true);
     const meshes: THREE.Mesh[] = [];
+    const byName = new Map((panos ?? []).map((p) => [p.name, p.center]));
     cloned.traverse((node) => {
       const mesh = node as THREE.Mesh;
       if (mesh.isMesh) {
         convertVertexColorsToLinear(mesh.geometry);
         // 無光沢マテリアル：ライティングせず写真色をそのまま出す。
+        // 複数パノ時は距離フェードで透過するため transparent を有効化。
         mesh.material = new THREE.MeshBasicMaterial({
           vertexColors: true,
           side: THREE.DoubleSide,
+          transparent: (panos?.length ?? 0) > 1,
         });
         mesh.frustumCulled = false;
+        // パノ中心を記録（PanoFader が最近傍判定に使う）。名前一致 or geometry名一致。
+        const c = byName.get(mesh.name) ?? byName.get(mesh.geometry.name);
+        if (c) mesh.userData.panoCenter = new THREE.Vector3(c[0], c[1], c[2]);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (mesh.geometry as any).computeBoundsTree();
         meshes.push(mesh);
@@ -87,8 +100,32 @@ function Model({
     });
     onReady(meshes);
     return cloned;
-  }, [scene, onReady]);
+  }, [scene, onReady, panos]);
   return <primitive object={object} />;
+}
+
+// 複数パノを「最近傍だけ不透明＋次点をクロスフェード」で描く。入れ子シェルの遮蔽と
+// z-fighting を避けつつ、移動すると隣のパノへ滑らかに切り替わる＝つなぎ目なし。
+function PanoFader({ colliderRef }: { colliderRef: RefObject<THREE.Mesh[]> }) {
+  const { camera } = useThree();
+  useFrame(() => {
+    const meshes = colliderRef.current?.filter((m) => m.userData.panoCenter);
+    if (!meshes || meshes.length < 2) return;
+    const d = meshes.map((m) => {
+      const c = m.userData.panoCenter as THREE.Vector3;
+      return Math.hypot(camera.position.x - c.x, camera.position.z - c.z);
+    });
+    const dmin = Math.min(...d);
+    // 最近傍は不透明、それ以外は (dmin/d)^k で減衰。
+    meshes.forEach((m, i) => {
+      const w = Math.min(1, Math.pow(dmin / Math.max(d[i], 1e-3), 3));
+      const mat = m.material as THREE.MeshBasicMaterial;
+      mat.opacity = w;
+      mat.depthWrite = w > 0.5; // 主役のみ深度書き込み → ちらつき低減
+      m.visible = w > 0.02;
+    });
+  });
+  return null;
 }
 
 interface KeyState {
@@ -363,9 +400,11 @@ function Player({
 export default function SceneViewer({
   glbUrl,
   initialHeadingDeg,
+  panos,
 }: {
   glbUrl: string | null;
   initialHeadingDeg?: number | null;
+  panos?: PanoInfo[];
 }) {
   const [locked, setLocked] = useState(false);
   const [mode, setMode] = useState<"player" | "free">("player");
@@ -389,12 +428,14 @@ export default function SceneViewer({
             <Model
               key={glbUrl}
               url={glbUrl}
+              panos={panos}
               onReady={(meshes) => {
                 colliderRef.current = meshes;
               }}
             />
           )}
         </Suspense>
+        {(panos?.length ?? 0) > 1 && <PanoFader colliderRef={colliderRef} />}
         {/* glbUrl/mode ごとに Player を作り直し、カメラ/操作状態をリセット */}
         <Player
           key={`${glbUrl ?? "none"}_${mode}`}

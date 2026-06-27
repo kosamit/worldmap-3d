@@ -41,6 +41,17 @@ def _load(model_id: str | None = None):
     if model_id not in _models:
         from depth_anything_3.api import DepthAnything3
 
+        # 省メモリ: 別モデルに切り替えるときは旧モデルをVRAMから解放（Large→Small等を
+        # 試すと両方VRAMに残るのを防ぐ）。同一モデル再利用時は解放されない。
+        if _models:
+            import gc
+
+            import torch
+            _models.clear()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         model = DepthAnything3.from_pretrained(model_id)
         _models[model_id] = model.to(device="cuda")
     return _models[model_id]

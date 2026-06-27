@@ -156,7 +156,7 @@ def _global_scale(prediction, view_index, viewpoints, radius_hint=None):
 
 
 def _pano_geometry(prediction, view_index, viewpoints, vp_idx, scale=None, eq_w=1536,
-                   inpaint=True, layered=True, front_discontinuity=0.12,
+                   inpaint=True, layered=True, front_discontinuity=0.45,
                    back_discontinuity=0.5, progress=None):
     """1視点パノラマの (verts(視点中心相対メートル), faces, rgba, center(DA3単位), scale, info)。
 
@@ -212,7 +212,7 @@ def _pano_geometry(prediction, view_index, viewpoints, vp_idx, scale=None, eq_w=
 
 
 def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
-                        inpaint=True, layered=True, front_discontinuity=0.12,
+                        inpaint=True, layered=True, front_discontinuity=0.45,
                         back_discontinuity=0.5, max_faces=1_200_000, progress=None):
     """単一視点 equirect RGBD → 穴埋め＋レイヤード遮蔽補完 → 球面メッシュ(trimesh.Scene)。"""
     progress = progress or _noop
@@ -241,7 +241,7 @@ def build_panorama_mesh(prediction, view_index, viewpoints, vp_idx=0, eq_w=1536,
 
 
 def build_multipano_scene(prediction, view_index, viewpoints, eq_w=1536, inpaint=True,
-                          layered=True, front_discontinuity=0.12, back_discontinuity=0.5,
+                          layered=True, front_discontinuity=0.45, back_discontinuity=0.5,
                           max_faces_per_pano=500_000, progress=None):
     """複数視点パノラマを共通座標に配置 → 連続的に歩ける「つなぎ目のない」シーン。
 

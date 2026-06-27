@@ -606,6 +606,13 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                 from .reconstruct_experiments import build_poisson_mesh
                 with _Heartbeat(progress, "mesh", "Poisson面再構成中", 40.0):
                     scene, info = build_poisson_mesh(pred, view_index, viewpoints)
+            elif params["method"] == "panorama":
+                # 単一視点 equirect RGBD ＋ 生成穴埋め（LaMa）→ 隙間のない球面メッシュ。
+                from .panorama3d import build_panorama_mesh
+                with _Heartbeat(progress, "mesh", "パノラマ生成補完中", 30.0):
+                    scene, info = build_panorama_mesh(
+                        pred, view_index, viewpoints, vp_idx=0, inpaint=True,
+                    )
             else:
                 # GPSアンカー配置で面を張る（既定）。
                 scene, info = build_multiview_pointcloud(
@@ -743,10 +750,12 @@ def reconstruct_multiview(
         "remove_objects": bool(remove_objects),
         "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
         "inpaint": bool(inpaint),
-        "method": method if method in ("tsdf", "poisson") else "mesh",
+        "method": method if method in ("tsdf", "poisson", "panorama") else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }
+    if params["method"] == "panorama":
+        params["max_views"] = 1  # パノラマは中心1視点のみ使用（取得・推論を節約）
     jid = _new_job()
     thread = threading.Thread(
         target=_run_multiview_job, args=(jid, lat, lng, params, api_key), daemon=True

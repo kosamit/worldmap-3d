@@ -408,7 +408,7 @@ export default function Home() {
 
   // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
   // method="tsdf" で TSDF 融合（重なり層を1枚の連続面へ＝ソリッド）。
-  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" = "mesh") => {
+  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" = "mesh") => {
     if (!current) {
       say("先に地図で地点を選んでください", true);
       return;
@@ -553,6 +553,15 @@ export default function Home() {
                 title="Poisson面再構成: 穴を水密面で塞ぎ、柱の裏など見えない部分も補間で埋めます（推測込み）"
               >
                 {building3d ? "生成中..." : "◐ Poisson 3D化（穴埋め）"}
+              </button>
+              <button
+                type="button"
+                className="primaryWide pano"
+                onClick={() => handle3DMulti("panorama")}
+                disabled={!current || building3d}
+                title="この1地点の360°を生成AI(LaMa)で穴埋めし、隙間のない球面空間を作って見回せます"
+              >
+                {building3d ? "生成中..." : "● パノラマ生成3D（隙間なし）"}
               </button>
             </>
           )}

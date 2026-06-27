@@ -323,6 +323,15 @@ body {
   background: #9d6fe0;
 }
 
+.panel button.primaryWide.pano {
+  background: #1f8a8a;
+  margin-top: 6px;
+}
+
+.panel button.primaryWide.pano:hover {
+  background: #25a3a3;
+}
+
 .galleryLink {
   display: block;
   margin-top: 10px;

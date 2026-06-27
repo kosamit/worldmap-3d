@@ -607,11 +607,13 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                 with _Heartbeat(progress, "mesh", "Poisson面再構成中", 40.0):
                     scene, info = build_poisson_mesh(pred, view_index, viewpoints)
             elif params["method"] == "panorama":
-                # 単一視点 equirect RGBD ＋ 生成穴埋め（LaMa）→ 隙間のない球面メッシュ。
-                from .panorama3d import build_panorama_mesh
-                with _Heartbeat(progress, "mesh", "パノラマ生成補完中", 30.0):
-                    scene, info = build_panorama_mesh(
-                        pred, view_index, viewpoints, vp_idx=0, inpaint=True,
+                # equirect RGBD ＋ 生成穴埋め（LaMa）→ 隙間のない球面メッシュ。
+                # 視点が複数なら GPS アンカーで実位置に並べ、つなぎ目なく連続的に歩ける
+                # シーンにする（build_multipano_scene）。1視点なら従来の単一球。
+                from .panorama3d import build_multipano_scene
+                with _Heartbeat(progress, "mesh", "パノラマ生成補完中", 30.0 + 8.0 * len(viewpoints)):
+                    scene, info = build_multipano_scene(
+                        pred, view_index, viewpoints, inpaint=True,
                     )
             elif params["method"] == "primitive":
                 # 構造プリミティブ化（平面＋箱/円柱）。ゲームのブロックアウト風オブジェクト。
@@ -759,8 +761,8 @@ def reconstruct_multiview(
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }
-    if params["method"] == "panorama":
-        params["max_views"] = 1  # パノラマは中心1視点のみ使用（取得・推論を節約）
+    # パノラマは地点数=1で従来の単一球、2以上でつなぎ目なし連続シーン(build_multipano_scene)。
+    # ユーザーの地点数設定をそのまま尊重する（以前は1に固定していた）。
     jid = _new_job()
     thread = threading.Thread(
         target=_run_multiview_job, args=(jid, lat, lng, params, api_key), daemon=True

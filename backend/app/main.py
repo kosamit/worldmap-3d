@@ -613,6 +613,11 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                     scene, info = build_panorama_mesh(
                         pred, view_index, viewpoints, vp_idx=0, inpaint=True,
                     )
+            elif params["method"] == "primitive":
+                # 構造プリミティブ化（平面＋箱/円柱）。ゲームのブロックアウト風オブジェクト。
+                from .primitives import build_primitive_mesh
+                with _Heartbeat(progress, "mesh", "プリミティブ化中", 20.0):
+                    scene, info = build_primitive_mesh(pred, view_index, viewpoints)
             else:
                 # GPSアンカー配置で面を張る（既定）。
                 scene, info = build_multiview_pointcloud(
@@ -750,7 +755,7 @@ def reconstruct_multiview(
         "remove_objects": bool(remove_objects),
         "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
         "inpaint": bool(inpaint),
-        "method": method if method in ("tsdf", "poisson", "panorama") else "mesh",
+        "method": method if method in ("tsdf", "poisson", "panorama", "primitive") else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }

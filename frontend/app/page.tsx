@@ -408,7 +408,7 @@ export default function Home() {
 
   // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
   // method="tsdf" で TSDF 融合（重なり層を1枚の連続面へ＝ソリッド）。
-  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" = "mesh") => {
+  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" = "mesh") => {
     if (!current) {
       say("先に地図で地点を選んでください", true);
       return;
@@ -562,6 +562,15 @@ export default function Home() {
                 title="この1地点の360°を生成AI(LaMa)で穴埋めし、隙間のない球面空間を作って見回せます"
               >
                 {building3d ? "生成中..." : "● パノラマ生成3D（隙間なし）"}
+              </button>
+              <button
+                type="button"
+                className="primaryWide prim"
+                onClick={() => handle3DMulti("primitive")}
+                disabled={!current || building3d}
+                title="壁/床/天井を平面、柱を円柱、什器を箱に整形。ゲームのブロックアウト風の独立オブジェクトにします"
+              >
+                {building3d ? "生成中..." : "▦ プリミティブ3D（ゲーム風）"}
               </button>
             </>
           )}

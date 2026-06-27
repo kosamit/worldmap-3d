@@ -332,6 +332,15 @@ body {
   background: #25a3a3;
 }
 
+.panel button.primaryWide.prim {
+  background: #b06a2c;
+  margin-top: 6px;
+}
+
+.panel button.primaryWide.prim:hover {
+  background: #c87d38;
+}
+
 .galleryLink {
   display: block;
   margin-top: 10px;

@@ -701,20 +701,17 @@ export default function Home() {
                   <h2 className="settingsHead">★ 高精度3D化（マルチビュー）</h2>
                   <label className="field">
                     深度モデル（カメラ対応必須）
-                    <input
-                      type="text"
-                      list="mvModels"
+                    <select
                       value={multi.depthModel}
                       onChange={(e) => setMultiParam("depthModel", e.target.value)}
                       disabled={building3d}
-                    />
-                    <datalist id="mvModels">
+                    >
                       {(config?.multiview_model_presets ?? []).map((m) => (
                         <option key={m.id} value={m.id}>
                           {m.label}
                         </option>
                       ))}
-                    </datalist>
+                    </select>
                   </label>
                   <div className="grid2">
                     <label className="field">

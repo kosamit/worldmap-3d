@@ -87,6 +87,11 @@ def get_pipeline(model_id: str = DEFAULT_MODEL_ID):
     return _pipes[model_id]
 
 
+def unload() -> None:
+    """ロード済み深度パイプラインを解放してGPUメモリを空ける。"""
+    _pipes.clear()
+
+
 def estimate_depth(image: Image.Image, model: str | None = None) -> np.ndarray:
     """視差マップ (H, W) float32 を返す。値が大きいほどカメラに近い。
 

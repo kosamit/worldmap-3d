@@ -5,7 +5,7 @@
 - GET  /api/config                     フロント用の公開設定 (Maps JS キー等)
 - POST /api/reconstruct                画像アップロード → 3D 化
 - POST /api/reconstruct/streetview     緯度経度 → Street View 取得 → 3D 化
-- POST /api/reconstruct/panorama       1 地点を 360° 撮影 → 3D 化
+- POST /api/reconstruct/multiview      周辺の複数地点 → DA3マルチビュー → 3D 化
 - POST /api/reconstruct/route          地図で選んだ道沿いの点列 → 連結 3D 化
 - GET  /api/scenes                     蓄積済みシーン一覧
 - GET  /scenes/<id>/scene.glb          生成済み glb (静的配信)
@@ -30,13 +30,9 @@ from PIL import Image
 
 from . import depth, depth_da3, storage
 from .depth import _select_device, active_backend, estimate_depth
-from .panorama import build_panorama
 from .reconstruct_da3 import build_multiview_pointcloud
 from .reconstruct import (
     DEFAULT_FOV_DEG,
-    DISCONTINUITY_RATIO,
-    FAR_M,
-    NEAR_M,
     reconstruct_mesh,
 )
 from .route import (
@@ -133,7 +129,7 @@ def _update_job(jid: str, **fields) -> None:
 
 
 def _job_progress(jid: str):
-    """build_panorama / worker から呼ぶ progress(phase, step, total, message)。"""
+    """ジョブ worker から呼ぶ progress(phase, step, total, message)。"""
 
     def progress(phase: str, step: int, total: int, message: str) -> None:
         lo, hi = _PHASE_RANGES.get(phase, (0, 100))
@@ -193,14 +189,6 @@ def config():
         "depth_backend": active_backend(),
         "depth_default_model": depth.default_model(),
         "model_presets": depth.model_presets(),
-        "max_panorama_views": MAX_PANORAMA_VIEWS,
-        "reconstruct_defaults": {
-            "near": NEAR_M,
-            "far": FAR_M,
-            "discontinuity": DISCONTINUITY_RATIO,
-            "max_width": PANORAMA_MAX_WIDTH,
-            "num_views": 8,
-        },
         # 高精度3D化（DA3 マルチビュー）。カメラポーズ対応モデルが必要。
         "multiview_available": active_backend() == "da3",
         "multiview_default_model": depth_da3.DA3_MULTIVIEW_MODEL_ID,
@@ -223,6 +211,10 @@ def config():
             "height_clip_m": 40.0,
             "edge_factor": 0.7,
             "discontinuity_ratio": 0.15,
+            "cut_stretch": True,
+            "front_discontinuity": 0.45,
+            "ground_cap": False,
+            "camera_height_m": 2.5,
             "tsdf_voxel": 0.12,
             "process_res": 504,
             "process_res_method": "upper_bound_resize",
@@ -287,122 +279,6 @@ def reconstruct_streetview(
         raise HTTPException(status_code=500, detail=f"3D生成に失敗しました: {exc}")
 
 
-def _run_panorama_job(jid: str, lat, lng, headings, pitch, fov, api_key, params):
-    """別スレッドで実行する 3D化本体。進捗を _jobs[jid] に書き込む。"""
-    progress = _job_progress(jid)
-    num_views = len(headings)
-    try:
-        # 1. Street View 取得（フェーズ: street_view）
-        images = []
-        for i, heading in enumerate(headings):
-            progress("street_view", i, num_views, f"Street View 取得 {i + 1}/{num_views}")
-            image, _ = fetch_streetview(
-                lat, lng, heading=heading, pitch=pitch, fov=fov, api_key=api_key
-            )
-            images.append((image, heading))
-        progress("street_view", num_views, num_views, "Street View 取得 完了")
-
-        # 2. 深度推定 + メッシュ合成（フェーズ: depth, mesh）。推論は直列化。
-        with _infer_lock:
-            scene, info = build_panorama(
-                images,
-                fov_deg=fov,
-                max_width=params["max_width"],
-                near_m=params["near"],
-                far_m=params["far"],
-                discontinuity_ratio=params["discontinuity"],
-                depth_model=params["depth_model"],
-                progress=progress,
-            )
-
-        # 3. 保存（フェーズ: save）
-        progress("save", 0, 1, "glb を保存中 ...")
-        sid = storage.new_scene_id()
-        meta = {
-            "id": sid,
-            "source": "streetview_panorama",
-            "created_at": _now_iso(),
-            "location": {
-                "lat": lat,
-                "lng": lng,
-                "pitch": pitch,
-                "fov": fov,
-                "num_views": num_views,
-            },
-            "depth_backend": active_backend(),
-            **info,
-        }
-        storage.save_scene(scene, meta)
-        meta["glb_url"] = f"/scenes/{sid}/scene.glb"
-        progress("save", 1, 1, "完了")
-        _update_job(
-            jid,
-            status="done",
-            percent=100,
-            phase="done",
-            message=f"3D化完了: {meta.get('vertex_count', '?')} 頂点",
-            result=meta,
-        )
-    except ValueError as exc:
-        _update_job(jid, status="error", error=str(exc), message=f"失敗: {exc}")
-    except Exception as exc:  # noqa: BLE001 - 例外はジョブ状態に記録
-        _update_job(
-            jid,
-            status="error",
-            error=str(exc),
-            message=f"パノラマ3D生成に失敗しました: {exc}",
-        )
-
-
-def _clamp_reconstruct_params(near, far, discontinuity, max_width, depth_model) -> dict:
-    """フロントから来た再構成パラメータを安全な範囲にクランプする。"""
-    near = max(0.1, min(100.0, float(near)))
-    far = max(near + 0.5, min(1000.0, float(far)))
-    discontinuity = max(0.005, min(1.0, float(discontinuity)))
-    max_width = int(max(64, min(1024, int(max_width))))
-    depth_model = (depth_model or "").strip() or None
-    return {
-        "near": near,
-        "far": far,
-        "discontinuity": discontinuity,
-        "max_width": max_width,
-        "depth_model": depth_model,
-    }
-
-
-@app.post("/api/reconstruct/panorama")
-def reconstruct_panorama(
-    lat: float = Form(...),
-    lng: float = Form(...),
-    num_views: int = Form(8),
-    pitch: float = Form(0.0),
-    fov: float = Form(90.0),
-    near: float = Form(NEAR_M),
-    far: float = Form(FAR_M),
-    discontinuity: float = Form(DISCONTINUITY_RATIO),
-    max_width: int = Form(PANORAMA_MAX_WIDTH),
-    depth_model: str | None = Form(None),
-    api_key: str | None = Form(None),
-):
-    """同一地点を 360° 分割で撮影し、取り囲む 1 つの 3D 空間へ合成する。
-
-    実処理はバックグラウンドのジョブで行い、即座に {job_id} を返す。フロントは
-    GET /api/reconstruct/progress/{job_id} をポーリングして進捗・結果を受け取る。
-    """
-    num_views = max(2, min(MAX_PANORAMA_VIEWS, num_views))
-    headings = [i * 360.0 / num_views for i in range(num_views)]
-    params = _clamp_reconstruct_params(near, far, discontinuity, max_width, depth_model)
-
-    jid = _new_job()
-    thread = threading.Thread(
-        target=_run_panorama_job,
-        args=(jid, lat, lng, headings, pitch, fov, api_key, params),
-        daemon=True,
-    )
-    thread.start()
-    return {"job_id": jid}
-
-
 @app.get("/api/reconstruct/progress/{job_id}")
 def reconstruct_progress(job_id: str):
     """3D化ジョブの進捗を返す。status は running | done | error。"""
@@ -411,6 +287,80 @@ def reconstruct_progress(job_id: str):
         if job is None:
             raise HTTPException(status_code=404, detail="ジョブが見つかりません")
         return dict(job)
+
+
+def _gpu_util_pct() -> int | None:
+    """nvidia-smi から GPU 使用率(%)をベストエフォートで取得。取れなければ None。"""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=1.5,
+        )
+        return int(out.stdout.strip().splitlines()[0])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@app.get("/api/gpu")
+def gpu_status():
+    """GPU のメモリ使用量・使用率を返す。フロントのパネルが定期ポーリングして表示する。
+
+    used/total はGPU全体の物理メモリ（他プロセス込み）。torch_* はこのプロセスの
+    確保量。available=False のときは CUDA 無し or 取得失敗。
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return {"available": False}
+        free, total = torch.cuda.mem_get_info()
+        used = total - free
+        mib = 1024 * 1024
+        return {
+            "available": True,
+            "name": torch.cuda.get_device_name(0),
+            "used_mb": round(used / mib),
+            "total_mb": round(total / mib),
+            "free_mb": round(free / mib),
+            "used_pct": round(used / total * 100, 1),
+            "torch_allocated_mb": round(torch.cuda.memory_allocated() / mib),
+            "torch_reserved_mb": round(torch.cuda.memory_reserved() / mib),
+            "util_pct": _gpu_util_pct(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
+
+
+@app.post("/api/gpu/free")
+def gpu_free():
+    """ロード済みモデル(DA3/深度/LaMa/YOLO/ESRGAN)を解放し CUDA メモリを空ける。
+
+    パネルのボタンから手動で呼ぶ。次回の3D化では各モデルを再ロードする（初回は遅い）。
+    """
+    freed = []
+    for name, fn in (
+        ("DA3", lambda: depth_da3.unload()),
+        ("depth", lambda: depth.unload()),
+    ):
+        try:
+            fn()
+            freed.append(name)
+        except Exception:  # noqa: BLE001
+            pass
+    for name, mod in (("LaMa/YOLO", "segment"), ("ESRGAN", "enhance"), ("SemSeg", "semseg")):
+        try:
+            __import__(f"app.{mod}", fromlist=["unload"]).unload()
+            freed.append(name)
+        except Exception:  # noqa: BLE001
+            pass
+    _free_cuda()
+    return {"freed": freed, "gpu": gpu_status()}
 
 
 def _pitch_rows(pitch_count: int) -> list[float]:
@@ -544,6 +494,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
         total_imgs = len(viewpoints) * per_vp
         images = []
         view_index = []
+        view_angles = []  # 各画像の (heading, pitch, fov)。コライダーのDA3不要姿勢に使う。
         for vi, vp in enumerate(viewpoints):
             for (h, p, vfov) in view_list:
                 done = len(images)
@@ -558,6 +509,7 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                 )
                 images.append(image)
                 view_index.append(vi)
+                view_angles.append((h, p, vfov))
         progress("street_view", total_imgs, total_imgs,
                  f"{len(viewpoints)}地点×{grid_desc} を取得")
 
@@ -583,36 +535,44 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                          f"生成補完 完了（{int(masks0.reshape(len(masks0),-1).any(1).sum())}枚を補修）")
             _free_cuda()  # YOLO/LaMa のGPUを解放してからDA3推論（メモリ競合で遅くなるのを防ぐ）
 
-        # 2. DA3 マルチビュー推論（フェーズ: depth）。推論は直列化。
+        # 2. カメラ姿勢（必要なら深度）。GPU推論は直列化。
         with _infer_lock:
-            base = f"DA3 マルチビュー推論中（{total_imgs}枚・モデルロード含む）"
-            progress("depth", 0, 1, base + " ...")
-            # 想定所要: 1枚あたり約0.5秒＋初回モデルロード余裕。バーのクリープ用。
-            est = 12.0 + 0.5 * total_imgs
-            with _Heartbeat(progress, "depth", base, est):
-                pred = depth_da3.infer_multiview(
-                    images,
-                    model_id=params["depth_model"],
-                    process_res=params["process_res"],
-                    process_res_method=params["process_res_method"],
-                    use_ray_pose=params["use_ray_pose"],
-                    ref_view_strategy=params["ref_view_strategy"],
-                )
-            progress("depth", 1, 1,
-                     "深度＋カメラポーズ推定 完了"
-                     + ("（レイベース）" if params["use_ray_pose"] else ""))
+            if params["method"] == "colliders":
+                # 意味コライダーは深度不要。既知の取得角(heading/pitch/fov)から
+                # カメラ姿勢を解析的に構成し DA3 をスキップする（論文の核心: LiDARも深度も
+                # 使わずに歩ける意味3D。docs/new_paper_concept.md §4-5）。
+                progress("depth", 1, 1, "既知取得角からカメラ姿勢を構成（DA3不要）")
+                from .colliders import build_analytic_prediction
+                pred = build_analytic_prediction(images, view_angles)
+            else:
+                base = f"DA3 マルチビュー推論中（{total_imgs}枚・モデルロード含む）"
+                progress("depth", 0, 1, base + " ...")
+                # 想定所要: 1枚あたり約0.5秒＋初回モデルロード余裕。バーのクリープ用。
+                est = 12.0 + 0.5 * total_imgs
+                with _Heartbeat(progress, "depth", base, est):
+                    pred = depth_da3.infer_multiview(
+                        images,
+                        model_id=params["depth_model"],
+                        process_res=params["process_res"],
+                        process_res_method=params["process_res_method"],
+                        use_ray_pose=params["use_ray_pose"],
+                        ref_view_strategy=params["ref_view_strategy"],
+                    )
+                progress("depth", 1, 1,
+                         "深度＋カメラポーズ推定 完了"
+                         + ("（レイベース）" if params["use_ray_pose"] else ""))
 
-            # 2.5 物体除去（穴あけ）。inpaint=Trueのときは1.9で補完済みなのでスキップ。
-            if params["remove_objects"] and params["remove_classes"] and not params["inpaint"]:
-                progress("depth", 1, 1, "物体除去（YOLO）中 ...")
-                from . import segment
-                masks = segment.removal_masks(
-                    pred["processed_images"], params["remove_classes"])
-                if masks.any():
-                    pred["depth"] = pred["depth"].copy()
-                    pred["depth"][masks] = -1.0  # 非正=無効 → 全手法で除外（穴になる）
-                    progress("depth", 1, 1,
-                             f"物体除去 完了（{int(masks.reshape(len(masks),-1).any(1).sum())}枚で検出）")
+                # 2.5 物体除去（穴あけ）。inpaint=Trueのときは1.9で補完済みなのでスキップ。
+                if params["remove_objects"] and params["remove_classes"] and not params["inpaint"]:
+                    progress("depth", 1, 1, "物体除去（YOLO）中 ...")
+                    from . import segment
+                    masks = segment.removal_masks(
+                        pred["processed_images"], params["remove_classes"])
+                    if masks.any():
+                        pred["depth"] = pred["depth"].copy()
+                        pred["depth"][masks] = -1.0  # 非正=無効 → 全手法で除外（穴になる）
+                        progress("depth", 1, 1,
+                                 f"物体除去 完了（{int(masks.reshape(len(masks),-1).any(1).sum())}枚で検出）")
 
             # 3. 面の構築（フェーズ: mesh）。method で手法を切替。
             if params["method"] == "tsdf":
@@ -633,15 +593,28 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
                 # 視点が複数なら GPS アンカーで実位置に並べ、つなぎ目なく連続的に歩ける
                 # シーンにする（build_multipano_scene）。1視点なら従来の単一球。
                 from .panorama3d import build_multipano_scene
+                # 引き伸ばしカット: ON=front_discontinuity でしきい値カット / OFF=巨大値で全面保持。
+                fd = params["front_discontinuity"] if params["cut_stretch"] else 1e9
                 with _Heartbeat(progress, "mesh", "パノラマ生成補完中", 30.0 + 8.0 * len(viewpoints)):
                     scene, info = build_multipano_scene(
                         pred, view_index, viewpoints, inpaint=True,
+                        front_discontinuity=fd, back_discontinuity=fd,
+                        ground_cap=params["ground_cap"],
+                        camera_height_m=params["camera_height_m"],
                     )
             elif params["method"] == "primitive":
                 # 構造プリミティブ化（平面＋箱/円柱）。ゲームのブロックアウト風オブジェクト。
                 from .primitives import build_primitive_mesh
                 with _Heartbeat(progress, "mesh", "プリミティブ化中", 20.0):
                     scene, info = build_primitive_mesh(pred, view_index, viewpoints)
+            elif params["method"] == "colliders":
+                # 意味コライダー層（戦略1・深度不要）: セグメンテーション＋既知カメラ高さで
+                # 床/壁/物体のコライダー(メートル)を生成。docs/semantic_scene_colliders.md。
+                from .colliders import build_collider_scene
+                with _Heartbeat(progress, "mesh", "意味コライダー生成中", 10.0 + 4.0 * total_imgs):
+                    scene, info = build_collider_scene(
+                        pred, view_index, viewpoints,
+                        camera_height_m=params["camera_height_m"], progress=progress)
             else:
                 # GPSアンカー配置で面を張る（既定）。
                 scene, info = build_multiview_pointcloud(
@@ -680,6 +653,10 @@ def _run_multiview_job(jid, lat, lng, params, api_key):
             "requested_views": int(params["max_views"]),
             "views_capped": bool(capped),
             "images_used": int(total_imgs),
+            "cut_stretch": bool(params["cut_stretch"]),
+            "front_discontinuity": float(params["front_discontinuity"]),
+            "ground_cap": bool(params["ground_cap"]),
+            "camera_height_m": float(params["camera_height_m"]),
             **info,
         }
         storage.save_scene(scene, meta)
@@ -759,6 +736,10 @@ def reconstruct_multiview(
     height_clip_m: float = Form(40.0),
     edge_factor: float = Form(0.7),
     discontinuity_ratio: float = Form(0.15),
+    cut_stretch: bool = Form(True),
+    front_discontinuity: float = Form(0.45),
+    ground_cap: bool = Form(False),
+    camera_height_m: float = Form(2.5),
     process_res: int = Form(504),
     process_res_method: str = Form("upper_bound_resize"),
     use_ray_pose: bool = Form(True),
@@ -799,6 +780,10 @@ def reconstruct_multiview(
         "height_clip_m": max(0.0, min(200.0, float(height_clip_m))),  # 0=無効
         "edge_factor": max(0.0, min(3.0, float(edge_factor))),    # スパイク除去(辺÷深度), 0=無効
         "discontinuity_ratio": max(0.01, min(1.0, float(discontinuity_ratio))),
+        "cut_stretch": bool(cut_stretch),                          # パノラマ: 引き伸ばし三角をカット
+        "front_discontinuity": max(0.05, min(2.0, float(front_discontinuity))),  # カット強度(小=強)
+        "ground_cap": bool(ground_cap),                            # パノラマ: 床平面RANSACキャップ
+        "camera_height_m": max(0.5, min(5.0, float(camera_height_m))),  # 標尺=カメラ高さ(実寸基準)
         "process_res": int(max(168, min(1008, process_res))),
         "process_res_method": prm,
         "use_ray_pose": bool(use_ray_pose),
@@ -814,7 +799,7 @@ def reconstruct_multiview(
         "remove_objects": bool(remove_objects),
         "remove_classes": [c.strip() for c in (remove_classes or "").split(",") if c.strip()],
         "inpaint": bool(inpaint),
-        "method": method if method in ("tsdf", "poisson", "panorama", "primitive") else "mesh",
+        "method": method if method in ("tsdf", "poisson", "panorama", "primitive", "colliders") else "mesh",
         "tsdf_voxel": max(0.04, min(0.4, float(tsdf_voxel))),
         "depth_model": (depth_model or "").strip() or None,
     }

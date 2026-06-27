@@ -33,6 +33,13 @@ def class_names(model_id: str | None = None) -> dict[int, str]:
 _lama = None
 
 
+def unload() -> None:
+    """ロード済み YOLO / LaMa を解放してGPUメモリを空ける。"""
+    global _lama
+    _lama = None
+    _models.clear()
+
+
 def _load_lama():
     global _lama
     if _lama is None:

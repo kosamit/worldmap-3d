@@ -214,6 +214,96 @@ body {
   color: #b26b00;
 }
 
+.presetChips {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+
+.chip {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: #9fb3c8;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.chip:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chipOn {
+  color: #e6e9ed;
+  background: rgba(78, 161, 255, 0.22);
+  border-color: rgba(78, 161, 255, 0.6);
+}
+
+.gpuStat {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.gpuStatHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: #9fb3c8;
+}
+
+.gpuStatHead span:last-child {
+  font-variant-numeric: tabular-nums;
+}
+
+.gpuFreeBtn {
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 0.68rem;
+  color: #e6e9ed;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.gpuFreeBtn:hover:not(:disabled) {
+  background: rgba(255, 120, 120, 0.22);
+  border-color: rgba(255, 120, 120, 0.5);
+}
+
+.gpuFreeBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gpuBar {
+  margin-top: 6px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.gpuBarFill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #4ea1ff, #7ee0a0);
+  transition: width 0.4s ease;
+}
+
 .status {
   margin-top: 18px;
   font-size: 0.82rem;

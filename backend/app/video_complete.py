@@ -105,9 +105,10 @@ def make_trajectory(points, n_frames=25, H=512, W=512, fov_deg=60.0,
 
 
 def render_pointcloud(points, colors, K, w2c, H, W, splat=1, device=None):
-    """点群を1カメラへ z-buffer スプラットレンダ → (rgb uint8(H,W,3), valid bool(H,W))。
+    """点群を1カメラへ z-buffer スプラットレンダ → (rgb uint8(H,W,3), valid bool(H,W), depth(H,W))。
 
     valid=False の画素＝どの点も投影されない穴（遮蔽/未撮影）＝生成補完すべき領域。
+    depth は穴で inf（カメラ前方距離 z）。
     """
     import torch
 
@@ -138,21 +139,99 @@ def render_pointcloud(points, colors, K, w2c, H, W, splat=1, device=None):
             colbuf[flat] = co[ok]
             depth[flat] = torch.minimum(depth[flat], zo[ok])
     rgb = colbuf.reshape(H, W, 3).cpu().numpy()
-    valid = torch.isfinite(depth).reshape(H, W).cpu().numpy()
-    return rgb, valid
+    dep = depth.reshape(H, W).cpu().numpy()
+    valid = np.isfinite(dep)
+    return rgb, valid, dep
 
 
 def render_trajectory(points, colors, cams, H=512, W=512, splat=1, progress=None):
-    """軌道全フレームをレンダ → (frames(N,H,W,3 uint8), holes(N,H,W bool), cams)。
+    """軌道全フレームをレンダ → (frames(N,H,W,3 uint8), holes(N,H,W bool), depths(N,H,W), cams)。
 
-    holes は「穴(True=補完すべき)」。フレームは穴を黒で表現。
+    holes は「穴(True=補完すべき)」。フレームは穴を黒で表現。depths は穴で inf。
     """
     progress = progress or _noop
     frames = np.zeros((len(cams), H, W, 3), np.uint8)
     holes = np.zeros((len(cams), H, W), bool)
+    depths = np.full((len(cams), H, W), np.inf, np.float32)
     for i, (K, w2c) in enumerate(cams):
         progress("mesh", i, len(cams), f"軌道レンダ {i + 1}/{len(cams)} ...")
-        rgb, valid = render_pointcloud(points, colors, K, w2c, H, W, splat)
+        rgb, valid, dep = render_pointcloud(points, colors, K, w2c, H, W, splat)
         frames[i] = rgb
         holes[i] = ~valid
-    return frames, holes, cams
+        depths[i] = dep
+    return frames, holes, depths, cams
+
+
+def _fill_hole_depth(depth, hole, win=21):
+    """穴の深度を「周囲の遠い側」で補完（遮蔽の背後＝背景深度になるように）。"""
+    import cv2
+
+    d = depth.copy().astype(np.float32)
+    d[hole] = 0.0
+    # 既知画素の最大(遠)を窓で広げて穴へ。背景(遠)で埋める＝柱裏が背景深度に。
+    far = cv2.dilate(d, np.ones((win, win), np.uint8))
+    out = d.copy()
+    out[hole] = far[hole]
+    # まだ0(周囲も穴)の所は最近傍既知で埋める
+    still = hole & (out <= 0)
+    if still.any():
+        known = (~hole & (depth > 0)).astype(np.uint8)
+        if known.any():
+            _, lab = cv2.distanceTransformWithLabels(
+                1 - known, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+            ki = np.flatnonzero(known.ravel())
+            lk = lab.ravel()[ki]
+            order = np.argsort(lk)
+            lut = np.zeros(lk.max() + 1, np.float32)
+            lut[lk[order]] = depth.ravel()[ki][order]
+            out.ravel()[still.ravel()] = lut[lab.ravel()[still.ravel()]]
+    return out
+
+
+def inpaint_and_refuse(frames, holes, depths, cams, max_new=400000, progress=None):
+    """各フレームの穴を LaMa で色生成＋深度を遠側補完 → 逆投影して新規点群を得る。
+
+    返り値: (new_points(M,3) float32, new_colors(M,3) uint8)。元点群に足して再メッシュする。
+    """
+    from . import segment
+
+    progress = progress or _noop
+    new_pts = []
+    new_cols = []
+    N = len(cams)
+    for i, (K, w2c) in enumerate(cams):
+        hole = holes[i]
+        if not hole.any():
+            continue
+        progress("mesh", i, N, f"穴を生成補完＋逆投影 {i + 1}/{N} ...")
+        # 色: LaMa（失敗時 OpenCV）
+        try:
+            filled = segment.inpaint_masked(frames[i][None], hole[None])[0]
+        except Exception:
+            import cv2
+            filled = cv2.inpaint(frames[i], (hole.astype(np.uint8) * 255), 5,
+                                 cv2.INPAINT_TELEA)
+        # 深度: 遠側で補完
+        dep = _fill_hole_depth(depths[i], hole)
+        H, W = hole.shape
+        vy, vx = np.nonzero(hole)
+        z = dep[vy, vx]
+        ok = np.isfinite(z) & (z > 0)
+        vy, vx, z = vy[ok], vx[ok], z[ok]
+        if not len(vy):
+            continue
+        Kinv = np.linalg.inv(K)
+        pix = np.stack([vx, vy, np.ones_like(vx)], 0).astype(np.float64)
+        camp = (Kinv @ pix) * z[None, :]  # (3,M) カメラ座標
+        c2w = np.linalg.inv(w2c)
+        world = (c2w[:3, :3] @ camp).T + c2w[:3, 3]
+        new_pts.append(world.astype(np.float32))
+        new_cols.append(filled[vy, vx])
+    if not new_pts:
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.uint8)
+    P = np.concatenate(new_pts, 0)
+    C = np.concatenate(new_cols, 0)
+    if len(P) > max_new:  # 間引き
+        idx = np.random.default_rng(0).choice(len(P), max_new, replace=False)
+        P, C = P[idx], C[idx]
+    return P, C

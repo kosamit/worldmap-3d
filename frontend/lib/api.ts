@@ -10,14 +10,6 @@ export interface ModelPreset {
   label: string;
 }
 
-export interface ReconstructDefaults {
-  near: number;
-  far: number;
-  discontinuity: number;
-  max_width: number;
-  num_views: number;
-}
-
 export interface MultiviewDefaults {
   max_views: number;
   heading_count: number;
@@ -31,6 +23,10 @@ export interface MultiviewDefaults {
   height_clip_m: number;
   edge_factor: number;
   discontinuity_ratio: number;
+  cut_stretch: boolean;
+  front_discontinuity: number;
+  ground_cap: boolean;
+  camera_height_m: number;
   tsdf_voxel: number;
   process_res: number;
   process_res_method: string;
@@ -53,27 +49,12 @@ export interface AppConfig {
   depth_backend?: string;
   depth_default_model?: string;
   model_presets?: ModelPreset[];
-  max_panorama_views?: number;
-  reconstruct_defaults?: ReconstructDefaults;
   multiview_available?: boolean;
   multiview_default_model?: string;
   multiview_model_presets?: ModelPreset[];
   multiview_defaults?: MultiviewDefaults;
   multiview_ref_view_strategies?: ModelPreset[];
   multiview_process_res_methods?: ModelPreset[];
-}
-
-// 3D化パラメータ（フロントの「詳細設定」と対応）。
-export interface ReconstructParams {
-  lat: number;
-  lng: number;
-  numViews?: number;
-  fov?: number;
-  near?: number;
-  far?: number;
-  discontinuity?: number;
-  maxWidth?: number;
-  depthModel?: string | null;
 }
 
 // 3D化ジョブの進捗。
@@ -156,6 +137,36 @@ export async function fetchConfig(base: string): Promise<AppConfig> {
   return res.json();
 }
 
+// GPU メモリ使用量・使用率（パネルの定期表示用）。
+export interface GpuStatus {
+  available: boolean;
+  name?: string;
+  used_mb?: number;
+  total_mb?: number;
+  free_mb?: number;
+  used_pct?: number;
+  torch_allocated_mb?: number;
+  torch_reserved_mb?: number;
+  util_pct?: number | null;
+  error?: string;
+}
+
+export async function fetchGpu(base: string): Promise<GpuStatus> {
+  const res = await fetch(`${normalizeBase(base)}/api/gpu`);
+  if (!res.ok) throw new Error(`GPU情報の取得に失敗 (${res.status})`);
+  return res.json();
+}
+
+export async function freeGpu(
+  base: string,
+): Promise<{ freed: string[]; gpu: GpuStatus }> {
+  const res = await fetch(`${normalizeBase(base)}/api/gpu/free`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`GPU解放に失敗 (${res.status})`);
+  return res.json();
+}
+
 export async function fetchScenes(base: string): Promise<SceneMeta[]> {
   const res = await fetch(`${normalizeBase(base)}/api/scenes`);
   if (!res.ok) throw new Error(`シーン一覧の取得に失敗 (${res.status})`);
@@ -220,39 +231,6 @@ async function pollJob(
   throw new Error("3D化がタイムアウトしました");
 }
 
-/**
- * 単一地点パノラマ深度メッシュの3D化ジョブを開始し、完了までポーリングする。
- */
-export async function reconstructPanorama(
-  base: string,
-  params: ReconstructParams,
-  onProgress?: (p: Progress) => void,
-): Promise<SceneMeta> {
-  const root = normalizeBase(base);
-  const form = new FormData();
-  form.append("lat", String(params.lat));
-  form.append("lng", String(params.lng));
-  form.append("num_views", String(params.numViews ?? 8));
-  form.append("fov", String(params.fov ?? 90));
-  if (params.near != null) form.append("near", String(params.near));
-  if (params.far != null) form.append("far", String(params.far));
-  if (params.discontinuity != null)
-    form.append("discontinuity", String(params.discontinuity));
-  if (params.maxWidth != null) form.append("max_width", String(params.maxWidth));
-  if (params.depthModel) form.append("depth_model", params.depthModel);
-
-  const res = await fetch(`${root}/api/reconstruct/panorama`, {
-    method: "POST",
-    body: form,
-  });
-  if (!res.ok) {
-    const detail = await safeDetail(res);
-    throw new Error(`3D化の開始に失敗 (${res.status}): ${detail}`);
-  }
-  const { job_id: jobId } = (await res.json()) as { job_id: string };
-  return pollJob(root, jobId, onProgress);
-}
-
 // 高精度3D化（DA3 マルチビュー整合メッシュ）のパラメータ。
 export interface MultiviewParams {
   lat: number;
@@ -269,6 +247,10 @@ export interface MultiviewParams {
   heightClipM?: number;
   edgeFactor?: number;
   discontinuityRatio?: number;
+  cutStretch?: boolean;
+  frontDiscontinuity?: number;
+  groundCap?: boolean;
+  cameraHeightM?: number;
   processRes?: number;
   processResMethod?: string;
   useRayPose?: boolean;
@@ -281,7 +263,7 @@ export interface MultiviewParams {
   removeObjects?: boolean;
   removeClasses?: string;
   inpaint?: boolean;
-  method?: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive";
+  method?: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" | "colliders";
   tsdfVoxel?: number;
   depthModel?: string | null;
   enhanceInput?: boolean;
@@ -321,6 +303,14 @@ export async function reconstructMultiview(
     form.append("edge_factor", String(params.edgeFactor));
   if (params.discontinuityRatio != null)
     form.append("discontinuity_ratio", String(params.discontinuityRatio));
+  if (params.cutStretch != null)
+    form.append("cut_stretch", String(params.cutStretch));
+  if (params.frontDiscontinuity != null)
+    form.append("front_discontinuity", String(params.frontDiscontinuity));
+  if (params.groundCap != null)
+    form.append("ground_cap", String(params.groundCap));
+  if (params.cameraHeightM != null)
+    form.append("camera_height_m", String(params.cameraHeightM));
   if (params.processRes != null)
     form.append("process_res", String(params.processRes));
   if (params.processResMethod)

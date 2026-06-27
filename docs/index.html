@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WorldMap 3D Docs</title>
+  <meta name="description" content="WorldMap 3D 設計・調査ドキュメント" />
+  <!-- docsify テーマ（CDN）: .md をそのまま閲覧。ビルド不要・拡張子そのまま。 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css" />
+  <!-- KaTeX（数式） -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.css" />
+  <style>
+    :root { --theme-color: #4ea1ff; }
+    .markdown-section { max-width: 900px; }
+    .markdown-section table { display: table; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="app">読み込み中…（このページはローカルHTTPサーバ経由で開いてください）</div>
+  <!-- Mermaid（パイプライン図・系譜図） -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>
+    if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
+    window.$docsify = {
+      name: 'WorldMap 3D Docs',
+      repo: '',
+      loadSidebar: true,        // _sidebar.md を読む
+      subMaxLevel: 3,           // 見出しを自動でサブ目次に
+      auto2top: true,
+      homepage: 'README.md',
+      search: {
+        placeholder: '検索…',
+        noData: '見つかりません',
+        depth: 4,
+      },
+      relativePath: false,
+      // ```mermaid ブロックを図として描画
+      markdown: {
+        renderer: {
+          code(code, lang) {
+            if (lang === 'mermaid') {
+              return '<div class="mermaid">' + code + '</div>';
+            }
+            return this.origin.code.apply(this, arguments);
+          },
+        },
+      },
+      plugins: [
+        function (hook) {
+          hook.doneEach(function () {
+            if (window.mermaid) {
+              try { window.mermaid.run({ querySelector: '.mermaid' }); } catch (e) {}
+            }
+          });
+        },
+      ],
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/zoom-image.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+  <!-- KaTeX 数式（$...$ / $$...$$） -->
+  <script src="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docsify-katex@latest/dist/docsify-katex.js"></script>
+</body>
+</html>

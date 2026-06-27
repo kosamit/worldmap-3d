@@ -57,6 +57,11 @@ def _load(model_id: str | None = None):
     return _models[model_id]
 
 
+def unload() -> None:
+    """ロード済み DA3 モデルを解放してGPUメモリを空ける（次回使用時に再ロード）。"""
+    _models.clear()
+
+
 def estimate_disparity(image: Image.Image, model_id: str | None = None) -> np.ndarray:
     """視差マップ (H, W) float32 を返す。値が大きいほどカメラに近い。"""
     if image.mode != "RGB":

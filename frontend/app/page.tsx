@@ -6,9 +6,11 @@ import {
   fetchConfig,
   fetchPano,
   glbUrl,
-  reconstructPanorama,
   reconstructMultiview,
+  fetchGpu,
+  freeGpu,
   type AppConfig,
+  type GpuStatus,
   type Progress,
 } from "@/lib/api";
 import type { LatLng } from "@/lib/geo";
@@ -28,25 +30,6 @@ function headingDiff(a: number, b: number): number {
   return d > 180 ? 360 - d : d;
 }
 
-// 3D化（深度メッシュ）の可変パラメータ。
-interface Params3D {
-  depthModel: string;
-  numViews: number;
-  near: number;
-  far: number;
-  discontinuity: number;
-  maxWidth: number;
-}
-
-const FALLBACK_PARAMS: Params3D = {
-  depthModel: "",
-  numViews: 8,
-  near: 1.0,
-  far: 25.0,
-  discontinuity: 0.08,
-  maxWidth: 256,
-};
-
 // 高精度3D化（DA3マルチビュー）の可変パラメータ。
 interface MultiParams {
   depthModel: string;
@@ -60,6 +43,10 @@ interface MultiParams {
   heightClipM: number;
   edgeFactor: number;
   discontinuityRatio: number;
+  cutStretch: boolean;
+  frontDiscontinuity: number;
+  groundCap: boolean;
+  cameraHeightM: number;
   tsdfVoxel: number;
   fov: number;
   processRes: number;
@@ -90,6 +77,10 @@ const FALLBACK_MULTI: MultiParams = {
   heightClipM: 40,
   edgeFactor: 0.7,
   discontinuityRatio: 0.15,
+  cutStretch: true,
+  frontDiscontinuity: 0.45,
+  groundCap: false,
+  cameraHeightM: 2.5,
   tsdfVoxel: 0.12,
   fov: 90,
   processRes: 504,
@@ -160,17 +151,13 @@ export default function Home() {
   const [building3d, setBuilding3d] = useState(false);
   const [enhancing, setEnhancing] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [gpu, setGpu] = useState<GpuStatus | null>(null);
+  const [freeing, setFreeing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [params, setParams] = useState<Params3D>(FALLBACK_PARAMS);
   const [multi, setMulti] = useState<MultiParams>(FALLBACK_MULTI);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const setParam = useCallback(
-    <K extends keyof Params3D>(key: K, value: Params3D[K]) =>
-      setParams((p) => ({ ...p, [key]: value })),
-    [],
-  );
   const setMultiParam = useCallback(
     <K extends keyof MultiParams>(key: K, value: MultiParams[K]) =>
       setMulti((p) => ({ ...p, [key]: value })),
@@ -194,15 +181,6 @@ export default function Home() {
         if (!cancelled) {
           setConfig(cfg);
           // バックエンドの既定値で 3D化パラメータを初期化。
-          const d = cfg.reconstruct_defaults;
-          setParams({
-            depthModel: cfg.depth_default_model ?? "",
-            numViews: d?.num_views ?? FALLBACK_PARAMS.numViews,
-            near: d?.near ?? FALLBACK_PARAMS.near,
-            far: d?.far ?? FALLBACK_PARAMS.far,
-            discontinuity: d?.discontinuity ?? FALLBACK_PARAMS.discontinuity,
-            maxWidth: d?.max_width ?? FALLBACK_PARAMS.maxWidth,
-          });
           const m = cfg.multiview_defaults;
           setMulti({
             depthModel: cfg.multiview_default_model ?? "",
@@ -217,6 +195,11 @@ export default function Home() {
             edgeFactor: m?.edge_factor ?? FALLBACK_MULTI.edgeFactor,
             discontinuityRatio:
               m?.discontinuity_ratio ?? FALLBACK_MULTI.discontinuityRatio,
+            cutStretch: m?.cut_stretch ?? FALLBACK_MULTI.cutStretch,
+            frontDiscontinuity:
+              m?.front_discontinuity ?? FALLBACK_MULTI.frontDiscontinuity,
+            groundCap: m?.ground_cap ?? FALLBACK_MULTI.groundCap,
+            cameraHeightM: m?.camera_height_m ?? FALLBACK_MULTI.cameraHeightM,
             tsdfVoxel: m?.tsdf_voxel ?? FALLBACK_MULTI.tsdfVoxel,
             fov: m?.fov ?? FALLBACK_MULTI.fov,
             processRes: m?.process_res ?? FALLBACK_MULTI.processRes,
@@ -245,6 +228,44 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
+  }, [backend, say]);
+
+  // GPU メモリ使用量を定期取得（生成中は短間隔で）。失敗時は静かに前回値を保持。
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const g = await fetchGpu(backend);
+        if (!cancelled) setGpu(g);
+      } catch {
+        /* バックエンド未起動など: 無視して次回リトライ */
+      }
+    };
+    tick();
+    const ms = building3d ? 1000 : 2500;
+    const id = setInterval(tick, ms);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [backend, building3d]);
+
+  // ロード済みモデルを解放してGPUメモリを空ける（実行前のメモリ確保用）。
+  const handleFreeGpu = useCallback(async () => {
+    setFreeing(true);
+    try {
+      const { freed, gpu: g } = await freeGpu(backend);
+      setGpu(g);
+      say(
+        freed.length
+          ? `GPU解放: ${freed.join(", ")} を解放しました`
+          : "GPU解放: 解放対象なし（モデル未ロード）",
+      );
+    } catch (err) {
+      say((err as Error).message, true);
+    } finally {
+      setFreeing(false);
+    }
   }, [backend, say]);
 
   const [mapsReady, setMapsReady] = useState(false);
@@ -373,52 +394,9 @@ export default function Home() {
     writeLocationToUrl(current.lat, current.lng, facingDeg);
   }, [current, facingDeg]);
 
-  // 今いる地点を深度推定で立体メッシュ化し、歩ける3Dモデルに切り替える。
-  const handle3D = useCallback(async () => {
-    if (!current) {
-      say("先に地図で地点を選んでください", true);
-      return;
-    }
-    setBuilding3d(true);
-    setProgress({
-      status: "running",
-      phase: "queued",
-      step: 0,
-      total: 0,
-      percent: 0,
-      message: "開始しています ...",
-    });
-    say("この地点を3D化中 ...");
-    try {
-      const meta = await reconstructPanorama(
-        backend,
-        {
-          lat: current.lat,
-          lng: current.lng,
-          numViews: params.numViews,
-          near: params.near,
-          far: params.far,
-          discontinuity: params.discontinuity,
-          maxWidth: params.maxWidth,
-          depthModel: params.depthModel || null,
-        },
-        (p) => setProgress(p),
-      );
-      setSceneHeadingDeg(facingRef.current);
-      setMeshGlb(glbUrl(backend, meta));
-      setScenePanos((meta as { panos?: PanoInfo[] }).panos);
-      setMode("mesh");
-      say(`3D化完了: ${meta.vertex_count ?? "?"} 頂点。WASDで歩けます`);
-    } catch (err) {
-      say((err as Error).message, true);
-    } finally {
-      setBuilding3d(false);
-    }
-  }, [current, backend, say, params]);
-
   // 周辺の複数地点を集め、DA3マルチビューで整合した高精度メッシュを作る。
   // method="tsdf" で TSDF 融合（重なり層を1枚の連続面へ＝ソリッド）。
-  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" = "mesh") => {
+  const handle3DMulti = useCallback(async (method: "mesh" | "tsdf" | "poisson" | "panorama" | "primitive" | "colliders" = "mesh") => {
     if (!current) {
       say("先に地図で地点を選んでください", true);
       return;
@@ -453,6 +431,10 @@ export default function Home() {
           heightClipM: multi.heightClipM,
           edgeFactor: multi.edgeFactor,
           discontinuityRatio: multi.discontinuityRatio,
+          cutStretch: multi.cutStretch,
+          frontDiscontinuity: multi.frontDiscontinuity,
+          groundCap: multi.groundCap,
+          cameraHeightM: multi.cameraHeightM,
           tsdfVoxel: multi.tsdfVoxel,
           fov: multi.fov,
           processRes: multi.processRes,
@@ -574,6 +556,15 @@ export default function Home() {
               >
                 {building3d ? "生成中..." : "★ マルチビュー3D化"}
               </button>
+              <button
+                type="button"
+                className="primaryWide"
+                onClick={() => handle3DMulti("colliders")}
+                disabled={!current || building3d}
+                title="セマンティック検出＋既知カメラ高さで、床/壁/物体のコライダー(箱/円柱)を生成（深度不要・実験）"
+              >
+                {building3d ? "生成中..." : "🧱 意味コライダー化（実験）"}
+              </button>
             </>
           )}
 
@@ -627,6 +618,40 @@ export default function Home() {
             </div>
           )}
 
+          {/* GPU メモリ使用量（生成中の挙動確認用） */}
+          {gpu?.available && (
+            <div className="gpuStat" title={
+              `${gpu.name ?? "GPU"} / このプロセス確保: ` +
+              `${gpu.torch_reserved_mb ?? 0}MB（割当 ${gpu.torch_allocated_mb ?? 0}MB）`
+            }>
+              <div className="gpuStatHead">
+                <span>
+                  🖥 GPU メモリ
+                  <button
+                    type="button"
+                    className="gpuFreeBtn"
+                    onClick={handleFreeGpu}
+                    disabled={freeing || building3d}
+                    title="ロード済みモデル(DA3/LaMa等)を解放してGPUメモリを空ける"
+                  >
+                    {freeing ? "解放中…" : "解放"}
+                  </button>
+                </span>
+                <span>
+                  {((gpu.used_mb ?? 0) / 1024).toFixed(1)} /{" "}
+                  {((gpu.total_mb ?? 0) / 1024).toFixed(1)} GB（{gpu.used_pct ?? 0}%）
+                  {gpu.util_pct != null ? ` · 使用率 ${gpu.util_pct}%` : ""}
+                </span>
+              </div>
+              <div className="gpuBar">
+                <div
+                  className="gpuBarFill"
+                  style={{ width: `${Math.min(100, gpu.used_pct ?? 0)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* 詳細設定（折りたたみ） */}
           <button
             type="button"
@@ -639,91 +664,6 @@ export default function Home() {
 
           {showSettings && (
             <div className="settings">
-              <label className="field">
-                深度モデル
-                <input
-                  type="text"
-                  list="depthModels"
-                  value={params.depthModel}
-                  onChange={(e) => setParam("depthModel", e.target.value)}
-                  disabled={building3d}
-                />
-                <datalist id="depthModels">
-                  {(config?.model_presets ?? []).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </datalist>
-              </label>
-
-              <div className="grid2">
-                <label className="field">
-                  視点数 (2–{config?.max_panorama_views ?? 16})
-                  <input
-                    type="number"
-                    min={2}
-                    max={config?.max_panorama_views ?? 16}
-                    step={1}
-                    value={params.numViews}
-                    onChange={(e) => setParam("numViews", Number(e.target.value))}
-                    disabled={building3d}
-                  />
-                </label>
-                <label className="field">
-                  解像度 max_width
-                  <input
-                    type="number"
-                    min={64}
-                    max={1024}
-                    step={32}
-                    value={params.maxWidth}
-                    onChange={(e) => setParam("maxWidth", Number(e.target.value))}
-                    disabled={building3d}
-                  />
-                </label>
-                <label className="field">
-                  near (m)
-                  <input
-                    type="number"
-                    min={0.1}
-                    step={0.5}
-                    value={params.near}
-                    onChange={(e) => setParam("near", Number(e.target.value))}
-                    disabled={building3d}
-                  />
-                </label>
-                <label className="field">
-                  far (m)
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={params.far}
-                    onChange={(e) => setParam("far", Number(e.target.value))}
-                    disabled={building3d}
-                  />
-                </label>
-                <label className="field">
-                  不連続しきい値
-                  <input
-                    type="number"
-                    min={0.005}
-                    max={1}
-                    step={0.005}
-                    value={params.discontinuity}
-                    onChange={(e) =>
-                      setParam("discontinuity", Number(e.target.value))
-                    }
-                    disabled={building3d}
-                  />
-                </label>
-              </div>
-              <p className="hint">
-                モデルを変えると初回のみロードで時間がかかります。near/far は距離レンジ、
-                不連続しきい値を上げると面が繋がりやすく（小さいと境界で分断）。
-              </p>
-
               {config?.multiview_available && (
                 <>
                   <h2 className="settingsHead">★ 高精度3D化（マルチビュー）</h2>
@@ -911,6 +851,56 @@ export default function Home() {
                         disabled={building3d}
                       />
                     </label>
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
+                        checked={multi.cutStretch}
+                        onChange={(e) =>
+                          setMultiParam("cutStretch", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      引き伸ばし三角をカット（パノラマ・縁の伸び防止）
+                    </label>
+                    <label className="field">
+                      カット強度 front (小=強く切る)
+                      <input
+                        type="number"
+                        min={0.05}
+                        max={2}
+                        step={0.05}
+                        value={multi.frontDiscontinuity}
+                        onChange={(e) =>
+                          setMultiParam("frontDiscontinuity", Number(e.target.value))
+                        }
+                        disabled={building3d || !multi.cutStretch}
+                      />
+                    </label>
+                    <label className="checkField">
+                      <input
+                        type="checkbox"
+                        checked={multi.groundCap}
+                        onChange={(e) =>
+                          setMultiParam("groundCap", e.target.checked)
+                        }
+                        disabled={building3d}
+                      />
+                      床平面キャップ（RANSAC・床のせり上がり/傾きを除去）
+                    </label>
+                    <label className="field">
+                      カメラ高さ m (標尺=実寸基準)
+                      <input
+                        type="number"
+                        min={0.5}
+                        max={5}
+                        step={0.1}
+                        value={multi.cameraHeightM}
+                        onChange={(e) =>
+                          setMultiParam("cameraHeightM", Number(e.target.value))
+                        }
+                        disabled={building3d || !multi.groundCap}
+                      />
+                    </label>
                     <label className="field">
                       画角 fov (60–120)
                       <input
@@ -941,6 +931,21 @@ export default function Home() {
                     </label>
                     <label className="field">
                       処理解像度 (168–1008)
+                      <div className="presetChips">
+                        {[280, 364, 504, 728].map((r) => (
+                          <button
+                            key={r}
+                            type="button"
+                            className={
+                              multi.processRes === r ? "chip chipOn" : "chip"
+                            }
+                            onClick={() => setMultiParam("processRes", r)}
+                            disabled={building3d}
+                          >
+                            {r}
+                          </button>
+                        ))}
+                      </div>
                       <input
                         type="number"
                         min={168}

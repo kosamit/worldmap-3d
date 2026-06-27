@@ -25,6 +25,8 @@ const glb = qs.get("glb");
 const headingDeg = Number(qs.get("heading") ?? 0);
 const fov = Number(qs.get("fov") ?? 90);
 const eye = Number(qs.get("eye") ?? 0);        // カメラ高さ(世界Y)。点群の地面位置に合わせ調整
+const cx = Number(qs.get("cx") ?? 0);          // カメラ水平オフセットX(東)
+const cz = Number(qs.get("cz") ?? 0);          // カメラ水平オフセットZ(+で南へ後退)
 const psize = Number(qs.get("psize") ?? 0.05); // 点サイズ(m)
 const W = Number(qs.get("w") ?? 960), H = Number(qs.get("h") ?? 960);
 
@@ -59,8 +61,8 @@ new GLTFLoader().load(glb, (gltf) => {
   // カメラ: 原点に立ち heading 方向を向く。eye 未指定なら中央値Yより少し上に置く。
   const camY = qs.has("eye") ? eye : (medY + 1.5);
   const h = headingDeg * Math.PI / 180;
-  camera.position.set(0, camY, 0);
-  camera.lookAt(Math.sin(h), camY, -Math.cos(h));
+  camera.position.set(cx, camY, cz);
+  camera.lookAt(cx + Math.sin(h), camY, cz - Math.cos(h));
   window.camY = camY;
   renderer.render(scene, camera);
   window.ready = true;

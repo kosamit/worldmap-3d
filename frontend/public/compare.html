@@ -85,12 +85,13 @@ new GLTFLoader().load(glb, (gltf) => {
       const c = centers[o.userData.ci];
       return Math.hypot(cx - c[0], cz - c[1]);
     });
-    const dmin = Math.min(...d);
-    const SOFT = 2.0;   // SceneViewer と同じ距離底上げ（中心で最近傍が消えないように）
+    let nearest = 0;
+    for (let i = 1; i < d.length; i++) if (d[i] < d[nearest]) nearest = i;
+    const BAND = 4.0;   // SceneViewer と同式: 最近傍のみ不透明＋深度書き、他は接近でフェード
     meshes.forEach((o, i) => {
-      const w = Math.min(1, Math.pow((dmin + SOFT) / (d[i] + SOFT), 3));
+      const w = i === nearest ? 1 : Math.max(0, 1 - (d[i] - d[nearest]) / BAND);
       o.material.opacity = w;
-      o.material.depthWrite = w > 0.5;
+      o.material.depthWrite = i === nearest;
       o.visible = w > 0.02;
     });
     window.fadeW = meshes.map((o) => +o.material.opacity.toFixed(2));

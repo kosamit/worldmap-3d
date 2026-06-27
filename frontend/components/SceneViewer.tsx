@@ -115,15 +115,17 @@ function PanoFader({ colliderRef }: { colliderRef: RefObject<THREE.Mesh[]> }) {
       const c = m.userData.panoCenter as THREE.Vector3;
       return Math.hypot(camera.position.x - c.x, camera.position.z - c.z);
     });
-    const dmin = Math.min(...d);
-    // 最近傍は不透明、それ以外は ((dmin+S)/(d+S))^k で減衰。S(m)で距離を底上げし、
-    // パノ中心(d→0)で最近傍が 0/0 で消える不具合を防ぐ（中心に立つとシーンが消える）。
-    const SOFT = 2.0;
+    // 最近傍パノは常に不透明＋深度書き込みで「主役」として手前を完全に覆う。他パノは
+    // 接近距離 BAND 以内でだけ下地としてフェードイン。等距離で両方不透明になって
+    // 別形状シェルが二重写り（ゴースト/白飛び）するのを防ぐ＝奥行きを入れても遷移が崩れない。
+    let nearest = 0;
+    for (let i = 1; i < d.length; i++) if (d[i] < d[nearest]) nearest = i;
+    const BAND = 4.0; // m
     meshes.forEach((m, i) => {
-      const w = Math.min(1, Math.pow((dmin + SOFT) / (d[i] + SOFT), 3));
+      const w = i === nearest ? 1 : Math.max(0, 1 - (d[i] - d[nearest]) / BAND);
       const mat = m.material as THREE.MeshBasicMaterial;
       mat.opacity = w;
-      mat.depthWrite = w > 0.5; // 主役のみ深度書き込み → ちらつき低減
+      mat.depthWrite = i === nearest; // 主役だけが深度を書く＝常に手前で遮蔽
       m.visible = w > 0.02;
     });
   });
